@@ -107,7 +107,13 @@ function roomStatus(room) {
 }
 
 function isJoinable(room) {
-    return room.players.length < logic.MAX_PLAYERS && roomStatus(room) !== 'playing';
+    const status = roomStatus(room);
+    return room.players.length < logic.MAX_PLAYERS && (status === 'waiting' || status === 'finished');
+}
+
+function isRunning(room) {
+    const status = roomStatus(room);
+    return status === 'swapping' || status === 'playing';
 }
 
 /** Resolve a socket to its room and player, or null when the socket holds no seat. */
@@ -136,6 +142,7 @@ function createRoom(store, socketId, name) {
         startedAt: null,
         settings: { ...DEFAULT_SETTINGS },
         scores: {},                          // playerId -> games won in this room
+        dealer: null,                         // seat index of the last dealer
         turn: { endsAt: null, handle: null }, // turn timer, managed by gameService
     };
     store.rooms.set(room.id, room);
@@ -147,7 +154,7 @@ function joinRoom(store, socketId, roomId, name) {
     const room = store.rooms.get(roomId);
     if (!room) return { error: 'Room not found' };
     if (room.players.length >= logic.MAX_PLAYERS) return { error: 'Room is full' };
-    if (roomStatus(room) === 'playing') return { error: 'Game already in progress' };
+    if (isRunning(room)) return { error: 'Game already in progress' };
 
     const player = newPlayer(socketId, uniqueName(room, name), false, nextColor(room));
     room.players.push(player);
@@ -199,7 +206,7 @@ function removePlayer(store, socketId) {
     }
 
     let gameEnded = false;
-    if (room.game && room.game.status === 'playing') {
+    if (room.game && isRunning(room)) {
         logic.removePlayer(room.game, player.id);
         gameEnded = room.game.status === 'finished';
     }
@@ -208,7 +215,7 @@ function removePlayer(store, socketId) {
 
 function updateSettings(room, player, patch) {
     if (!player.isHost) return { error: 'Only the host can change settings' };
-    if (roomStatus(room) === 'playing') return { error: 'Settings cannot change during a game' };
+    if (isRunning(room)) return { error: 'Settings cannot change during a game' };
 
     const next = { ...room.settings };
     if (patch.turnSeconds != null) {
@@ -228,11 +235,15 @@ function updateSettings(room, player, patch) {
 
 function startGame(store, room, player) {
     if (!player.isHost) return { error: 'Only the host can start the game' };
-    if (roomStatus(room) === 'playing') return { error: 'The game is already running' };
+    if (isRunning(room)) return { error: 'The game is already running' };
     if (room.players.length < logic.MIN_PLAYERS) {
         return { error: `Need at least ${logic.MIN_PLAYERS} players to start` };
     }
-    room.game = logic.createGame(room.players.map((p) => p.id), store.random);
+    // "The dealer is randomly selected for the first hand. The deal rotates clockwise after each hand."
+    // The deal, and so the turn order, starts with the player to the dealer's left.
+    const ids = room.players.map((p) => p.id);
+    room.dealer = room.dealer === null ? Math.floor(store.random() * ids.length) : (room.dealer + 1) % ids.length;
+    room.game = logic.createGame([...ids.slice(room.dealer + 1), ...ids.slice(0, room.dealer + 1)], store.random);
     room.startedAt = Date.now();
     return { ok: true };
 }
@@ -299,6 +310,7 @@ function buildView(room, viewer) {
                 faceUp: c ? c.faceUp : [],
                 faceDownCount: c ? c.faceDown.length : 0,
                 cardsLeft: c ? c.hand.length + c.faceUp.length + c.faceDown.length : 0,
+                ready: game ? game.ready.includes(p.id) : false,
                 finished: game ? game.finished.includes(p.id) : false,
                 isCurrent: p.id === current,
             };
@@ -307,6 +319,7 @@ function buildView(room, viewer) {
         pile: {
             top: game && game.pile.length ? game.pile[game.pile.length - 1] : null,
             count: game ? game.pile.length : 0,
+            topRun: game ? logic.topRun(game.pile) : 0,
         },
         deckCount: game ? game.deck.length : 0,
         currentPlayerId: current,
@@ -316,6 +329,7 @@ function buildView(room, viewer) {
         source: game ? logic.getSource(game, viewer.id) : null,
         legalCards: isMyTurn ? logic.legalCards(game, viewer.id) : [],
         canPickUp: game ? logic.canPickUp(game, viewer.id) : false,
+        mustPickUp: game ? logic.mustPickUp(game, viewer.id) : false,
         finished: game ? game.finished : [],
         loser: game ? game.loser : null,
         endReason: game ? game.endReason : null,
@@ -334,6 +348,7 @@ export {
     uniqueName,
     lookup,
     playerById,
+    isRunning,
     createRoom,
     joinRoom,
     resumeSession,

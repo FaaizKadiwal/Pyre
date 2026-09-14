@@ -8,7 +8,7 @@ Create a room, share the invite link, and play with friends from any phone or la
 ## ✨ Features
 
 - 🎮 **Real-time multiplayer** – Rooms with invite links, a public room list, private rooms and in-room chat.
-- 🃏 **Power cards** – 2 resets the pile, 7 forces a low card, 10 burns the pile and gives you another turn.
+- 🃏 **Classic Shithead rules** – Beat the pile with equal or higher cards, play sets, swap before the deal is locked in, burn with a 10 or four of a kind.
 - ⏱️ **Turn timer** – The host picks 30 seconds to 2 minutes; the game plays for anyone who runs out of time.
 - 🔄 **Reconnection** – Reload the page or lose signal and your seat and cards are still waiting for you.
 - 👑 **Host tools** – Start and restart games, change settings between rounds, remove a player.
@@ -58,12 +58,14 @@ Useful commands: `npm run dev` (restart on changes), `npm test`, `npm run lint`.
 
 ## 🎲 How to Play
 
-- Everyone gets 3 face-down cards, 3 face-up cards on top of them and 3 cards in hand.
-- On your turn play a card that matches the pile by **suit or value**. Your hand refills from the deck.
-- **2** resets the pile, **7** means the next card must be lower than 7, **10** burns the pile and you play again.
-- No playable card? Pick up the whole pile.
-- Once your hand and the deck are empty, play your face-up cards, then flip your face-down cards blind.
-- The first player to get rid of everything wins. The last player holding cards loses.
+Standard Shithead rules, as described on [pagat.com](https://www.pagat.com/beating/shithead.html).
+
+- Everyone gets 3 face-down cards, 3 face-up cards on top of them and 3 cards in hand. Before play you may swap any hand cards with your face-up cards, then press **Ready**.
+- The player who was dealt the lowest face-up card starts. On your turn play a card, or several cards of the same rank, **equal to or higher** than the top of the pile. Suits do not matter: 3 is lowest, ace is highest. Your hand refills to 3 while the deck lasts.
+- **2** can be played on anything, and anything can be played on a 2. **10** can be played on anything and burns the pile; you play again. **Four of a kind** on top of the pile burns it too.
+- Cannot or do not want to play? Pick up the whole pile; the next player starts a new one.
+- Once your hand and the deck are empty, play your face-up cards. If you must pick up then, one face-up card goes with the pile. After that, flip your face-down cards blind; an unplayable flip means you pick up the pile.
+- Whoever gets rid of everything first is safe. The last player left holding cards is the shithead.
 
 ---
 

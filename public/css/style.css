@@ -297,6 +297,9 @@ button.kick {
 .badge.out { background: #7bd88f; color: #05300f; }
 .badge.offline { background: var(--danger); color: #2b0000; }
 .badge.wins { background: rgba(255, 209, 102, 0.22); color: var(--accent); }
+.badge.ready { background: #7bd88f; color: #05300f; }
+.badge.waiting { background: rgba(255, 255, 255, 0.14); color: var(--muted); }
+.pile-info { min-height: 1.2em; font-size: 0.78rem; }
 .badge.last { background: var(--danger); color: #2b0000; animation: pulse 1s ease-in-out infinite; }
 @keyframes pulse { 50% { opacity: 0.55; } }
 @media (prefers-reduced-motion: reduce) {
@@ -433,6 +436,8 @@ button.kick {
 
 button.card { cursor: pointer; }
 button.card.playable { outline: 3px solid var(--accent); outline-offset: -1px; }
+button.card.selected { outline: 3px solid #7bd88f; outline-offset: -1px; transform: translateY(-8px); box-shadow: 0 8px 14px rgba(0, 0, 0, 0.4); }
+.table-slot button.card.face-up.selected { transform: translate(6px, 0); }
 button.card.playable:active { transform: translateY(-3px); }
 .table-slot button.card.face-up.playable:active { transform: translate(6px, 5px); }
 button.card:disabled { cursor: not-allowed; opacity: 0.55; }

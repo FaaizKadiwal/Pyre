@@ -1,16 +1,19 @@
 /**
- * Pure game rules. Nothing in this module knows about sockets or rooms.
+ * Pure rules of Shithead, following the basic game as described at
+ * https://www.pagat.com/beating/shithead.html. Nothing here knows about
+ * sockets or rooms.
  *
  * A game is a plain object so it can be serialised, inspected and tested:
  *   {
- *     status:   'playing' | 'finished',
- *     deck:     Card[]                       draw pile, last element is the top
- *     pile:     Card[]                       discard pile, last element is the top
- *     order:    string[]                     player ids in turn order
- *     turn:     number                       index into `order`
+ *     status:   'swapping' | 'playing' | 'finished'
+ *     deck:     Card[]      stock, last element is drawn next
+ *     pile:     Card[]      discard pile, last element is the top
+ *     order:    string[]    player ids in turn order (dealer's left first)
+ *     turn:     number      index into `order`
  *     cards:    { [id]: { hand, faceUp, faceDown } }
- *     finished: string[]                     ids in the order they emptied their cards
- *     loser:    string | null                set when the game completes normally
+ *     ready:    string[]    players who finished swapping
+ *     finished: string[]    ids in the order they got rid of all their cards
+ *     loser:    string|null the shithead, set when the game completes
  *     endReason:'completed' | 'abandoned' | null
  *   }
  *
@@ -20,8 +23,14 @@
 
 const SUITS = ['hearts', 'diamonds', 'clubs', 'spades'];
 const VALUES = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A'];
-const RANK = Object.fromEntries(VALUES.map((value, i) => [value, i + 2]));
-const POWER_CARDS = new Set(['2', '7', '10']);
+
+/** Beating order: 3 is lowest, ace highest. Twos are never compared, they are magic. */
+const RANK = { 3: 3, 4: 4, 5: 5, 6: 6, 7: 7, 8: 8, 9: 9, 10: 10, J: 11, Q: 12, K: 13, A: 14, 2: 15 };
+/** "The first 3 dealt ... if need be the first 4, and so on": the order used to find the lowest card. */
+const NATURAL_ORDER = ['3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A', '2'];
+/** What to give up first when a choice is forced: low cards before magic cards. */
+const SPEND_ORDER = ['3', '4', '5', '6', '7', '8', '9', 'J', 'Q', 'K', 'A', '10', '2'];
+const MAGIC = new Set(['2', '10']);
 const HAND_SIZE = 3;
 const TABLE_CARDS = 3;
 const MIN_PLAYERS = 2;
@@ -57,52 +66,131 @@ function sameCard(a, b) {
     return a.suit === b.suit && a.value === b.value;
 }
 
-function isPowerCard(card) {
-    return POWER_CARDS.has(card.value);
+function isMagic(card) {
+    return MAGIC.has(card.value);
+}
+
+/** One card, or several cards of the same rank. */
+function isSet(cards) {
+    return Array.isArray(cards)
+        && cards.length > 0
+        && cards.every(isCard)
+        && cards.every((c) => c.value === cards[0].value);
 }
 
 /**
- * Can `card` be placed on the current pile?
- *  - Empty pile: anything goes.
- *  - Power cards (2, 7, 10) can always be played.
- *  - On a 2 (reset): anything goes.
- *  - On a 7: the card must be lower than 7.
- *  - Otherwise: match suit or value.
+ * May `card` go on top of `top`?
+ *  - An empty pile takes anything.
+ *  - Twos and tens may be played on anything.
+ *  - Anything may be played on a two.
+ *  - Otherwise the card must be of equal or higher rank. Suits never matter.
  */
-function isValidPlay(card, pile) {
-    if (pile.length === 0) return true;
-    const top = pile[pile.length - 1];
-    if (isPowerCard(card)) return true;
+function canPlayOn(card, top) {
+    if (!top) return true;
+    if (isMagic(card)) return true;
     if (top.value === '2') return true;
-    if (top.value === '7') return RANK[card.value] < RANK['7'];
-    return card.suit === top.suit || card.value === top.value;
+    return RANK[card.value] >= RANK[top.value];
 }
 
+function isValidPlay(card, pile) {
+    return canPlayOn(card, pile[pile.length - 1]);
+}
+
+/** The lowest card in `cards` by the given order, or null. */
+function lowestValue(cards, order = SPEND_ORDER) {
+    let best = -1;
+    for (const card of cards) {
+        const i = order.indexOf(card.value);
+        if (best === -1 || i < best) best = i;
+    }
+    return best === -1 ? null : order[best];
+}
+
+/**
+ * "The first player is the person who receives the first 3 dealt face-up. If
+ * no 3 is face-up, the first person to call a three in a hand is the first
+ * player ... then the same procedure is followed for the first 4, and so on."
+ * Face-up cards were dealt one at a time around the table, so round-major order
+ * reproduces "the first 3 dealt".
+ */
+function firstPlayerIndex(order, cards) {
+    for (const value of NATURAL_ORDER) {
+        for (let round = 0; round < TABLE_CARDS; round++) {
+            for (let i = 0; i < order.length; i++) {
+                if (cards[order[i]].faceUp[round].value === value) return i;
+            }
+        }
+        for (let i = 0; i < order.length; i++) {
+            if (cards[order[i]].hand.some((c) => c.value === value)) return i;
+        }
+    }
+    return 0;
+}
+
+/** Deal one card at a time around the table: three face-down, three face-up, three in hand. */
 function createGame(playerIds, random = Math.random) {
     if (playerIds.length < MIN_PLAYERS || playerIds.length > MAX_PLAYERS) {
         throw new RangeError(`Need between ${MIN_PLAYERS} and ${MAX_PLAYERS} players`);
     }
     const deck = shuffle(createDeck(), random);
-    const cards = {};
-    for (const id of playerIds) {
-        cards[id] = {
-            faceDown: deck.splice(0, TABLE_CARDS),
-            faceUp: deck.splice(0, TABLE_CARDS),
-            hand: deck.splice(0, HAND_SIZE),
-        };
+    const cards = Object.fromEntries(playerIds.map((id) => [id, { faceDown: [], faceUp: [], hand: [] }]));
+    for (const pileName of ['faceDown', 'faceUp', 'hand']) {
+        for (let round = 0; round < TABLE_CARDS; round++) {
+            for (const id of playerIds) cards[id][pileName].push(deck.pop());
+        }
     }
+    const order = [...playerIds];
     return {
-        status: 'playing',
+        status: 'swapping',
         deck,
         pile: [],
-        order: [...playerIds],
-        turn: 0,
+        order,
+        turn: firstPlayerIndex(order, cards),
         cards,
+        ready: [],
         finished: [],
         loser: null,
         endReason: null,
     };
 }
+
+// ----- Before play: swapping -----
+
+/** "Before play each player may exchange any number of cards from the hand with her face-up cards." */
+function swapCards(game, id, handCard, faceUpCard) {
+    if (game.status !== 'swapping') return { error: 'Cards can only be swapped before play starts' };
+    const c = game.cards[id];
+    if (!c) return { error: 'You are not in this game' };
+    if (game.ready.includes(id)) return { error: 'You have already pressed Ready' };
+    if (!isCard(handCard) || !isCard(faceUpCard)) return { error: 'Invalid card' };
+    const h = c.hand.findIndex((x) => sameCard(x, handCard));
+    const f = c.faceUp.findIndex((x) => sameCard(x, faceUpCard));
+    if (h === -1 || f === -1) return { error: 'You do not hold those cards' };
+    [c.hand[h], c.faceUp[f]] = [c.faceUp[f], c.hand[h]];
+    return { ok: true };
+}
+
+function beginPlay(game) {
+    if (game.status !== 'swapping') return { error: 'Play has already begun' };
+    game.status = 'playing';
+    return { ok: true };
+}
+
+function allReady(game) {
+    return game.order.every((id) => game.ready.includes(id));
+}
+
+/** Mark a player ready; play begins once everyone is. */
+function setReady(game, id) {
+    if (game.status !== 'swapping') return { error: 'Play has already begun' };
+    if (!game.cards[id]) return { error: 'You are not in this game' };
+    if (!game.ready.includes(id)) game.ready.push(id);
+    const started = allReady(game);
+    if (started) beginPlay(game);
+    return { ok: true, started };
+}
+
+// ----- During play -----
 
 function currentPlayerId(game) {
     return game.status === 'playing' ? game.order[game.turn] : null;
@@ -113,7 +201,10 @@ function hasFinished(game, id) {
     return Boolean(c) && c.hand.length === 0 && c.faceUp.length === 0 && c.faceDown.length === 0;
 }
 
-/** Where the player must play from right now: hand, then face-up, then face-down. */
+/**
+ * Where the player must play from right now. "As long as you begin your turn
+ * with cards in your hand ... you can only play from the cards in your hand."
+ */
 function getSource(game, id) {
     const c = game.cards[id];
     if (!c) return null;
@@ -129,11 +220,25 @@ function legalCards(game, id) {
     return game.cards[id][source].filter((card) => isValidPlay(card, game.pile));
 }
 
-/** A player may (and must) pick up only when they hold visible cards and none is playable. */
+/** Picking up is always allowed while holding visible cards and the pile is not empty. */
 function canPickUp(game, id) {
     if (currentPlayerId(game) !== id || game.pile.length === 0) return false;
     const source = getSource(game, id);
-    return (source === 'hand' || source === 'faceUp') && legalCards(game, id).length === 0;
+    return source === 'hand' || source === 'faceUp';
+}
+
+/** Picking up is compulsory when nothing can be played. */
+function mustPickUp(game, id) {
+    return canPickUp(game, id) && legalCards(game, id).length === 0;
+}
+
+/** How many equal cards sit on top of the pile. */
+function topRun(pile) {
+    if (pile.length === 0) return 0;
+    const value = pile[pile.length - 1].value;
+    let run = 0;
+    for (let i = pile.length - 1; i >= 0 && pile[i].value === value; i--) run++;
+    return run;
 }
 
 function activePlayers(game) {
@@ -161,6 +266,7 @@ function advanceTurn(game) {
     skipFinished(game);
 }
 
+/** "If after playing you have fewer than three cards in your hand, you must immediately replenish." */
 function refillHand(game, id) {
     const c = game.cards[id];
     while (c.hand.length < HAND_SIZE && game.deck.length) {
@@ -168,10 +274,15 @@ function refillHand(game, id) {
     }
 }
 
-/** Apply the consequences of a successful play and decide whose turn is next. */
-function settleAfterPlay(game, id, card) {
-    const burned = card.value === '10';
-    if (burned) game.pile = [];
+/**
+ * The consequences of cards landing on the pile: a ten or a completed four of
+ * a kind burns the pile and the same player goes again; otherwise the turn passes.
+ */
+function settleAfterPlay(game, id, played) {
+    let burn = null;
+    if (played[0].value === '10') burn = 'ten';
+    else if (topRun(game.pile) >= 4) burn = 'four';
+    if (burn) game.pile = [];
 
     refillHand(game, id);
 
@@ -179,14 +290,13 @@ function settleAfterPlay(game, id, card) {
     if (finished) game.finished.push(id);
 
     if (endIfOver(game, 'completed')) {
-        return { burned, finished, gameOver: true };
+        return { burn, finished, gameOver: true, playAgain: false };
     }
-    if (burned && !finished) {
-        // A burn earns another turn.
-        return { burned, finished, gameOver: false, playAgain: true };
+    if (burn && !finished) {
+        return { burn, finished, gameOver: false, playAgain: true };
     }
     advanceTurn(game);
-    return { burned, finished, gameOver: false, playAgain: false };
+    return { burn, finished, gameOver: false, playAgain: false };
 }
 
 function checkTurn(game, id) {
@@ -195,26 +305,31 @@ function checkTurn(game, id) {
     return null;
 }
 
-function playCard(game, id, card) {
+/** Play one card or a set of equal cards from the hand, or from the face-up cards once the hand is empty. */
+function playCards(game, id, cards) {
     const turnError = checkTurn(game, id);
     if (turnError) return { error: turnError };
-    if (!isCard(card)) return { error: 'Invalid card' };
+    if (!isSet(cards)) return { error: 'Play one card, or several cards of the same rank' };
 
     const source = getSource(game, id);
     if (source !== 'hand' && source !== 'faceUp') {
         return { error: 'You must flip one of your face-down cards' };
     }
     const from = game.cards[id][source];
-    const index = from.findIndex((c) => sameCard(c, card));
-    if (index === -1) return { error: 'You do not hold that card' };
-    if (!isValidPlay(from[index], game.pile)) return { error: 'That card cannot be played now' };
+    const indexes = [];
+    for (const card of cards) {
+        const i = from.findIndex((c, index) => !indexes.includes(index) && sameCard(c, card));
+        if (i === -1) return { error: 'You do not hold those cards' };
+        indexes.push(i);
+    }
+    if (!isValidPlay(cards[0], game.pile)) return { error: 'Those cards cannot be played on the pile' };
 
-    const [played] = from.splice(index, 1);
-    game.pile.push(played);
-    return { ok: true, card: played, source, ...settleAfterPlay(game, id, played) };
+    const played = indexes.sort((a, b) => b - a).map((i) => from.splice(i, 1)[0]).reverse();
+    game.pile.push(...played);
+    return { ok: true, cards: played, source, ...settleAfterPlay(game, id, played) };
 }
 
-/** Blind play: the card is revealed, and if it is illegal the player takes the pile plus that card. */
+/** Blind play: flip a face-down card. If it is unplayable, the pile and that card go into the hand. */
 function playFaceDown(game, id, index) {
     const turnError = checkTurn(game, id);
     if (turnError) return { error: turnError };
@@ -228,7 +343,7 @@ function playFaceDown(game, id, index) {
 
     if (isValidPlay(card, game.pile)) {
         game.pile.push(card);
-        return { ok: true, card, source: 'faceDown', success: true, ...settleAfterPlay(game, id, card) };
+        return { ok: true, card, source: 'faceDown', success: true, ...settleAfterPlay(game, id, [card]) };
     }
 
     const pickedUp = game.pile.length + 1;
@@ -238,19 +353,35 @@ function playFaceDown(game, id, index) {
     return { ok: true, card, source: 'faceDown', success: false, pickedUp, gameOver: false };
 }
 
-function pickUpPile(game, id) {
+/**
+ * Take the whole pile into the hand. While playing face-up cards, one face-up
+ * card (the player's choice, else the lowest) is added to the pile first and
+ * comes along.
+ */
+function pickUpPile(game, id, faceUpCard = null) {
     const turnError = checkTurn(game, id);
     if (turnError) return { error: turnError };
-    if (!canPickUp(game, id)) return { error: 'You still have a playable card' };
-
-    const count = game.pile.length;
-    game.cards[id].hand.push(...game.pile);
+    if (!canPickUp(game, id)) {
+        return { error: game.pile.length ? 'You must flip one of your face-down cards' : 'The pile is empty' };
+    }
+    const c = game.cards[id];
+    let added = null;
+    if (getSource(game, id) === 'faceUp') {
+        const index = faceUpCard
+            ? c.faceUp.findIndex((x) => isCard(faceUpCard) && sameCard(x, faceUpCard))
+            : c.faceUp.findIndex((x) => x.value === lowestValue(c.faceUp));
+        if (index === -1) return { error: 'Choose one of your face-up cards to pick up with' };
+        [added] = c.faceUp.splice(index, 1);
+    }
+    const count = game.pile.length + (added ? 1 : 0);
+    c.hand.push(...game.pile);
+    if (added) c.hand.push(added);
     game.pile = [];
     advanceTurn(game);
-    return { ok: true, count };
+    return { ok: true, count, added };
 }
 
-/** Remove a player who left mid-game, keeping the turn pointer on the right player. */
+/** Remove a player who left, keeping the turn pointer on the right player and the swap phase consistent. */
 function removePlayer(game, id) {
     const index = game.order.indexOf(id);
     if (index === -1) return;
@@ -259,10 +390,12 @@ function removePlayer(game, id) {
     game.order.splice(index, 1);
     delete game.cards[id];
     game.finished = game.finished.filter((f) => f !== id);
+    game.ready = game.ready.filter((r) => r !== id);
 
-    if (game.order.length === 0) {
+    if (game.order.length < MIN_PLAYERS) {
         game.status = 'finished';
         game.endReason = 'abandoned';
+        game.loser = null;
         return;
     }
     if (index < game.turn) {
@@ -270,7 +403,9 @@ function removePlayer(game, id) {
     } else if (wasCurrent) {
         game.turn %= game.order.length;
     }
-    if (game.status === 'playing' && !endIfOver(game, 'abandoned')) {
+    if (game.status === 'swapping' && allReady(game)) {
+        beginPlay(game);
+    } else if (game.status === 'playing' && !endIfOver(game, 'abandoned')) {
         skipFinished(game);
     }
 }
@@ -279,6 +414,8 @@ export {
     SUITS,
     VALUES,
     RANK,
+    NATURAL_ORDER,
+    SPEND_ORDER,
     HAND_SIZE,
     TABLE_CARDS,
     MIN_PLAYERS,
@@ -287,15 +424,24 @@ export {
     shuffle,
     isCard,
     sameCard,
-    isPowerCard,
+    isMagic,
+    isSet,
+    canPlayOn,
     isValidPlay,
+    lowestValue,
     createGame,
+    swapCards,
+    beginPlay,
+    allReady,
+    setReady,
     currentPlayerId,
     hasFinished,
     getSource,
     legalCards,
     canPickUp,
-    playCard,
+    mustPickUp,
+    topRun,
+    playCards,
     playFaceDown,
     pickUpPile,
     removePlayer,

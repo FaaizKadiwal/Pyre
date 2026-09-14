@@ -7,9 +7,12 @@ const DISCONNECT_GRACE_MS = 60_000;
 const LOBBY = 'lobby';
 /** The leaderboard is recomputed at most this often; a finished game clears it at once. */
 const LEADERBOARD_TTL_MS = 5_000;
+/** How long the swap phase may last when the room has no turn timer. */
+const SWAP_FALLBACK_SECONDS = 120;
 
 const SUIT_SYMBOLS = { hearts: '♥', diamonds: '♦', clubs: '♣', spades: '♠' };
 const cardLabel = (card) => `${card.value}${SUIT_SYMBOLS[card.suit]}`;
+const cardLabels = (cards) => cards.map(cardLabel).join(' ');
 const describeTimer = (seconds) => (seconds ? `${seconds} seconds per turn` : 'no turn timer');
 
 /**
@@ -71,21 +74,49 @@ function createGameService(io, store) {
             .catch((err) => console.error('Failed to record game result:', err.message));
     };
 
-    // ----- Turn timer -----
+    const nameOf = (room, id) => rooms.playerById(room, id)?.name ?? 'A player';
+    const firstPlayerName = (room) => nameOf(room, logic.currentPlayerId(room.game));
+
+    // ----- Timers: the swap phase and each turn -----
 
     const clearTurnTimer = (room) => {
         if (room.turn.handle) clearTimeout(room.turn.handle);
         room.turn = { endsAt: null, handle: null };
     };
 
-    const scheduleTurn = (room) => {
-        clearTurnTimer(room);
-        const seconds = room.settings.turnSeconds;
-        if (!room.game || room.game.status !== 'playing' || seconds <= 0) return;
-        const handle = setTimeout(() => autoMove(room), seconds * 1000);
+    const arm = (room, seconds, fn) => {
+        const handle = setTimeout(() => fn(room), seconds * 1000);
         handle.unref?.();
         room.turn = { endsAt: Date.now() + seconds * 1000, handle };
     };
+
+    /**
+     * Arm the clock for the current phase. The swap deadline is set once and
+     * not restarted by each Ready press; every play restarts the turn clock.
+     */
+    const scheduleTurn = (room) => {
+        const game = room.game;
+        if (!game || game.status === 'finished') {
+            clearTurnTimer(room);
+            return;
+        }
+        if (game.status === 'swapping') {
+            if (room.turn.handle) return;
+            arm(room, room.settings.turnSeconds > 0 ? room.settings.turnSeconds : SWAP_FALLBACK_SECONDS, autoBegin);
+            return;
+        }
+        clearTurnTimer(room);
+        if (room.settings.turnSeconds > 0) arm(room, room.settings.turnSeconds, autoMove);
+    };
+
+    /** Swap time is up: play begins with whatever everyone has. */
+    function autoBegin(room) {
+        const game = room.game;
+        if (!game || game.status !== 'swapping') return;
+        logic.beginPlay(game);
+        announce(room, 'started', `Time is up for swapping. ${firstPlayerName(room)} goes first.`, { auto: true });
+        settle(room);
+    }
 
     /** When the clock runs out, the server makes a sensible move for the current player. */
     function autoMove(room) {
@@ -96,9 +127,10 @@ function createGameService(io, store) {
         if (!player) return;
         const legal = logic.legalCards(game, id);
         if (legal.length) {
-            play(room, player, legal[0], { auto: true });
+            const value = logic.lowestValue(legal);
+            play(room, player, legal.filter((c) => c.value === value), { auto: true });
         } else if (logic.canPickUp(game, id)) {
-            pickUp(room, player, { auto: true });
+            pickUp(room, player, null, { auto: true });
         } else if (logic.getSource(game, id) === 'faceDown') {
             const index = Math.floor(store.random() * game.cards[id].faceDown.length);
             playFaceDown(room, player, index, { auto: true });
@@ -113,11 +145,10 @@ function createGameService(io, store) {
         if (!game || game.status !== 'finished' || game.settled) return false;
         game.settled = true;
         clearTurnTimer(room);
-        const nameOf = (id) => rooms.playerById(room, id)?.name ?? 'A player';
         if (game.endReason === 'completed') {
             const winner = game.finished[0];
             room.scores[winner] = (room.scores[winner] ?? 0) + 1;
-            announce(room, 'game-over', `Game over: ${nameOf(game.loser)} lost. ${nameOf(winner)} finished first.`);
+            announce(room, 'game-over', `Game over: ${nameOf(room, game.loser)} is the shithead. ${nameOf(room, winner)} went out first.`);
             recordResult(room);
         } else {
             announce(room, 'game-over', 'Game over: not enough players left to continue.');
@@ -136,15 +167,17 @@ function createGameService(io, store) {
 
     const actor = (player, auto) => (auto ? `${player.name} ran out of time and` : player.name);
 
-    const play = (room, player, card, { auto = false } = {}) => {
+    const burnMessage = (burn) => (burn === 'ten' ? 'burned the pile with a ten' : 'completed four of a kind and burned the pile');
+
+    const play = (room, player, cards, { auto = false } = {}) => {
         if (!room.game) return { error: 'The game has not started' };
-        const result = logic.playCard(room.game, player.id, card);
+        const result = logic.playCards(room.game, player.id, cards);
         if (result.error) return result;
-        const label = cardLabel(result.card);
-        if (result.burned) {
-            announce(room, 'burn', `${actor(player, auto)} burned the pile with a ${label} and plays again.`, { card: result.card, auto });
+        const labels = cardLabels(result.cards);
+        if (result.burn) {
+            announce(room, 'burn', `${actor(player, auto)} played ${labels}, ${burnMessage(result.burn)} and plays again.`, { cards: result.cards, auto });
         } else {
-            announce(room, 'play', `${actor(player, auto)} played ${label}.`, { card: result.card, auto });
+            announce(room, 'play', `${actor(player, auto)} played ${labels}.`, { cards: result.cards, auto });
         }
         if (result.finished) announce(room, 'finished', `${player.name} is out of cards!`);
         settle(room);
@@ -157,9 +190,9 @@ function createGameService(io, store) {
         if (result.error) return result;
         const label = cardLabel(result.card);
         if (!result.success) {
-            announce(room, 'pick-up', `${actor(player, auto)} flipped ${label}, which cannot be played, and picked up ${result.pickedUp} cards.`, { card: result.card, auto });
-        } else if (result.burned) {
-            announce(room, 'burn', `${actor(player, auto)} flipped a ${label}, burned the pile and plays again.`, { card: result.card, auto });
+            announce(room, 'pick-up', `${actor(player, auto)} flipped ${label}, which does not beat the pile, and picked up ${result.pickedUp} cards.`, { card: result.card, auto });
+        } else if (result.burn) {
+            announce(room, 'burn', `${actor(player, auto)} flipped ${label}, ${burnMessage(result.burn)} and plays again.`, { card: result.card, auto });
         } else {
             announce(room, 'play', `${actor(player, auto)} flipped ${label}.`, { card: result.card, auto });
         }
@@ -168,11 +201,42 @@ function createGameService(io, store) {
         return { ok: true };
     };
 
-    const pickUp = (room, player, { auto = false } = {}) => {
+    const pickUp = (room, player, faceUpCard, { auto = false } = {}) => {
         if (!room.game) return { error: 'The game has not started' };
-        const result = logic.pickUpPile(room.game, player.id);
+        const result = logic.pickUpPile(room.game, player.id, faceUpCard);
         if (result.error) return result;
-        announce(room, 'pick-up', `${actor(player, auto)} picked up ${result.count} cards.`, { auto });
+        const extra = result.added ? ` (adding ${cardLabel(result.added)} from the table)` : '';
+        announce(room, 'pick-up', `${actor(player, auto)} picked up ${result.count} cards${extra}.`, { auto });
+        settle(room);
+        return { ok: true };
+    };
+
+    // ----- Before play: swapping -----
+
+    const swap = (room, player, handCard, faceUpCard) => {
+        if (!room.game) return { error: 'The game has not started' };
+        const result = logic.swapCards(room.game, player.id, handCard, faceUpCard);
+        if (result.error) return result;
+        broadcastRoom(room);
+        return { ok: true };
+    };
+
+    const ready = (room, player) => {
+        if (!room.game) return { error: 'The game has not started' };
+        const result = logic.setReady(room.game, player.id);
+        if (result.error) return result;
+        announce(room, 'ready', `${player.name} is ready.`);
+        if (result.started) announce(room, 'started', `Everyone is ready. ${firstPlayerName(room)} goes first.`);
+        settle(room);
+        return { ok: true };
+    };
+
+    const beginPlay = (room, player) => {
+        if (!player.isHost) return { error: 'Only the host can start play early' };
+        if (!room.game) return { error: 'The game has not started' };
+        const result = logic.beginPlay(room.game);
+        if (result.error) return result;
+        announce(room, 'started', `${player.name} started play. ${firstPlayerName(room)} goes first.`);
         settle(room);
         return { ok: true };
     };
@@ -203,8 +267,8 @@ function createGameService(io, store) {
     const startGame = (room, player) => {
         const result = rooms.startGame(store, room, player);
         if (result.error) return result;
-        const first = rooms.playerById(room, logic.currentPlayerId(room.game));
-        announce(room, 'started', `Game started. ${first.name} goes first.`);
+        clearTurnTimer(room);
+        announce(room, 'dealt', 'Cards dealt. Swap any hand cards with your face-up cards, then press Ready.');
         scheduleTurn(room);
         broadcastRoom(room);
         broadcastRoomList(); // no longer joinable
@@ -252,7 +316,7 @@ function createGameService(io, store) {
             announce(room, 'left', `${player.name} ${reason}.`);
             if (newHost) announce(room, 'host', `${newHost.name} is now the host.`);
             if (gameEnded) finishIfOver(room);
-            else if (room.game?.status === 'playing') scheduleTurn(room);
+            else if (room.game && room.game.status !== 'finished') scheduleTurn(room);
             broadcastRoom(room);
         }
         broadcastRoomList();
@@ -347,6 +411,9 @@ function createGameService(io, store) {
         holdSeat,
         startGame,
         updateSettings,
+        swap,
+        ready,
+        beginPlay,
         play,
         playFaceDown,
         pickUp,
@@ -355,4 +422,4 @@ function createGameService(io, store) {
     };
 }
 
-export { createGameService, DISCONNECT_GRACE_MS, LOBBY };
+export { createGameService, DISCONNECT_GRACE_MS, LOBBY, SWAP_FALLBACK_SECONDS };

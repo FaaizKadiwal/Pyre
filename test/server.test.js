@@ -51,7 +51,22 @@ async function until(condition, timeoutMs = 2000) {
     }
 }
 
-/** Every client plays its first legal card (or picks up / flips) until the game ends. */
+const SPEND_ORDER = ['3', '4', '5', '6', '7', '8', '9', 'J', 'Q', 'K', 'A', '10', '2'];
+const lowestValue = (cards) => cards.map((c) => c.value).sort((a, b) => SPEND_ORDER.indexOf(a) - SPEND_ORDER.indexOf(b))[0];
+
+/** Deal, press Ready for everyone, and resolve with each socket's first 'playing' view. */
+async function dealAndReady(host, sockets) {
+    const playing = Promise.all(sockets.map((s) => waitFor(s, 'room-state', (v) => v.status === 'playing', 5000)));
+    const started = await request(host, 'start-game');
+    if (!started.ok) throw new Error(started.error);
+    for (const s of sockets) {
+        const res = await request(s, 'ready');
+        if (!res.ok) throw new Error(res.error);
+    }
+    return playing;
+}
+
+/** Every client presses Ready, then plays its lowest legal set (or picks up / flips) until the game ends. */
 function playToCompletion(sockets, maxMoves = 5000) {
     return new Promise((resolve, reject) => {
         let moves = 0;
@@ -61,11 +76,18 @@ function playToCompletion(sockets, maxMoves = 5000) {
         for (const s of sockets) {
             const handler = async (view) => {
                 if (view.status === 'finished') { stop(); resolve(view); return; }
+                const mine = view.players.find((p) => p.id === view.me);
+                if (view.status === 'swapping') {
+                    if (mine?.inGame && !mine.ready) await request(s, 'ready');
+                    return;
+                }
                 if (view.status !== 'playing' || !view.isMyTurn) return;
                 if (++moves > maxMoves) { fail(new Error(`Game did not finish within ${maxMoves} moves`)); return; }
                 let res;
-                if (view.legalCards.length) res = await request(s, 'play-card', { card: view.legalCards[0] });
-                else if (view.canPickUp) res = await request(s, 'pick-up-pile');
+                if (view.legalCards.length) {
+                    const value = lowestValue(view.legalCards);
+                    res = await request(s, 'play-cards', { cards: view.legalCards.filter((c) => c.value === value) });
+                } else if (view.canPickUp) res = await request(s, 'pick-up-pile');
                 else if (view.source === 'faceDown') res = await request(s, 'play-face-down', { index: 0 });
                 else { fail(new Error('No move available on my turn')); return; }
                 if (!res.ok) fail(new Error(`Move rejected: ${res.error}`));
@@ -129,11 +151,31 @@ test('two players can create, join, start and play a full turn', async () => {
 
     assert.equal((await request(bob, 'start-game')).error, 'Only the host can start the game');
 
-    const [aliceState, bobState] = await Promise.all([
-        waitFor(alice, 'room-state', (s) => s.status === 'playing'),
-        waitFor(bob, 'room-state', (s) => s.status === 'playing'),
+    const [dealt] = await Promise.all([
+        waitFor(alice, 'room-state', (s) => s.status === 'swapping'),
         request(alice, 'start-game'),
     ]);
+    assert.equal(dealt.hand.length, 3);
+    assert.equal(dealt.isMyTurn, false, 'nobody plays during the swap phase');
+    assert.ok(dealt.turnEndsAt - dealt.serverNow > 59_000, 'the swap phase has a deadline');
+    assert.equal((await request(bob, 'play-cards', { cards: [dealt.hand[0]] })).error, 'The game is not in progress');
+
+    // Alice moves a hand card onto the table, then both press Ready.
+    const swapOut = dealt.hand[0];
+    const swapIn = dealt.players.find((p) => p.id === created.playerId).faceUp[0];
+    const [afterSwap] = await Promise.all([
+        waitFor(alice, 'room-state', (s) => s.hand.some((c) => c.suit === swapIn.suit && c.value === swapIn.value)),
+        request(alice, 'swap-cards', { handCard: swapOut, faceUpCard: swapIn }),
+    ]);
+    const myFaceUp = afterSwap.players.find((p) => p.id === created.playerId).faceUp;
+    assert.ok(myFaceUp.some((c) => c.suit === swapOut.suit && c.value === swapOut.value), 'the hand card is now face-up');
+    assert.equal((await request(bob, 'begin-play')).error, 'Only the host can start play early');
+    assert.equal((await request(alice, 'start-game')).error, 'The game is already running');
+
+    const playing = Promise.all([alice, bob].map((s) => waitFor(s, 'room-state', (v) => v.status === 'playing', 5000)));
+    assert.equal((await request(alice, 'ready')).ok, true);
+    assert.equal((await request(bob, 'ready')).ok, true);
+    const [aliceState, bobState] = await playing;
 
     assert.equal(aliceState.me, created.playerId);
     assert.equal(bobState.me, joined.playerId);
@@ -147,24 +189,29 @@ test('two players can create, join, start and play a full turn', async () => {
     assert.equal(bobSeenByAlice.socketId, undefined, 'socket ids never leave the server');
     assert.notEqual(aliceState.players[0].color, aliceState.players[1].color, 'players get distinct colours');
     assert.equal(aliceState.deckCount, 52 - 18);
-    assert.equal(aliceState.isMyTurn, true);
-    assert.equal(aliceState.legalCards.length, 3, 'anything goes on an empty pile');
+    const starter = aliceState.isMyTurn ? alice : bob;
+    const starterState = aliceState.isMyTurn ? aliceState : bobState;
+    const other = starter === alice ? bob : alice;
+    const otherState = starter === alice ? bobState : aliceState;
+    assert.equal(starterState.legalCards.length, 3, 'anything goes on an empty pile');
+    assert.equal(starterState.canPickUp, false, 'nothing to pick up from an empty pile');
     assert.deepEqual(aliceState.settings, { turnSeconds: 60, private: false });
     const remaining = aliceState.turnEndsAt - aliceState.serverNow;
     assert.ok(remaining > 59_000 && remaining <= 60_000, `turn clock is running: ${remaining}`);
 
-    assert.equal((await request(bob, 'play-card', { card: bobState.hand[0] })).error, 'It is not your turn');
-    assert.equal((await request(alice, 'play-card', { card: bobState.hand[0] })).error, 'You do not hold that card');
+    assert.equal((await request(other, 'play-cards', { cards: [otherState.hand[0]] })).error, 'It is not your turn');
+    assert.equal((await request(starter, 'play-cards', { cards: [otherState.hand[0]] })).error, 'You do not hold those cards');
 
-    const card = aliceState.legalCards[0];
+    // Avoid a ten so the pile keeps the card and the turn passes.
+    const card = starterState.legalCards.find((c) => c.value !== '10') ?? starterState.legalCards[0];
     const [afterPlay, event] = await Promise.all([
-        waitFor(bob, 'room-state', (s) => s.pile.count === 1 || s.currentPlayerId === joined.playerId),
-        waitFor(bob, 'game-event', (e) => e.type === 'play' || e.type === 'burn'),
-        request(alice, 'play-card', { card }),
+        waitFor(other, 'room-state', (s) => s.pile.count === 1 || s.currentPlayerId === otherState.me),
+        waitFor(other, 'game-event', (e) => e.type === 'play' || e.type === 'burn'),
+        request(starter, 'play-cards', { cards: [card] }),
     ]);
-    assert.match(event.message, /^Alice (played|burned)/);
+    assert.match(event.message, /^(Alice|Bob) played/);
     assert.equal(event.auto, false);
-    assert.equal(afterPlay.players.find((p) => p.id === created.playerId).handCount, 3, 'hand refilled');
+    assert.equal(afterPlay.players.find((p) => p.id === starterState.me).handCount, 3, 'hand refilled');
 
     // Chat is sanitised and only delivered inside the room.
     const [chat] = await Promise.all([
@@ -190,7 +237,7 @@ test('two players can create, join, start and play a full turn', async () => {
     const carol = await client();
     assert.equal((await request(carol, 'join-room', { roomId: created.roomId, name: 'Carol' })).ok, true);
     const [restarted] = await Promise.all([
-        waitFor(carol, 'room-state', (s) => s.status === 'playing'),
+        waitFor(carol, 'room-state', (s) => s.status === 'swapping'),
         request(alice, 'start-game'),
     ]);
     assert.equal(restarted.players.length, 2);
@@ -211,10 +258,7 @@ test('a player can reclaim their seat from a new connection with their session t
     const guest = await client();
     const created = await request(host, 'create-room', { name: 'Hana' });
     const joined = await request(guest, 'join-room', { roomId: created.roomId, name: 'Gus' });
-    await Promise.all([
-        waitFor(host, 'room-state', (s) => s.status === 'playing'),
-        request(host, 'start-game'),
-    ]);
+    await dealAndReady(host, [host, guest]);
 
     // The guest's connection dies; everyone sees the seat being held.
     const guestSocketId = guest.id;
@@ -273,19 +317,21 @@ test('the host controls settings, private rooms stay off the list, and the turn 
     assert.equal((await request(walkIn, 'join-room', { roomId: created.roomId, name: 'Ivy' })).ok, true, 'but the code still works');
     await request(walkIn, 'leave-room');
 
-    // Nobody moves after the start, so after one second the server plays for the host.
-    const timedOut = waitFor(host, 'game-event', (e) => e.auto === true, 4000);
-    const moved = waitFor(host, 'room-state', (s) => s.pile.count > 0 || s.currentPlayerId === joined.playerId, 4000);
-    const [started] = await Promise.all([
-        waitFor(host, 'room-state', (s) => s.status === 'playing'),
+    // Nobody presses Ready and nobody moves: the swap phase ends by itself, then the server plays for whoever is up.
+    const swapOver = waitFor(host, 'game-event', (e) => e.type === 'started' && e.auto === true, 4000);
+    const timedOut = waitFor(host, 'game-event', (e) => e.auto === true && e.type !== 'started', 6000);
+    const moved = waitFor(host, 'room-state', (s) => s.status === 'playing' && s.pile.count > 0, 6000);
+    const [dealt] = await Promise.all([
+        waitFor(host, 'room-state', (s) => s.status === 'swapping'),
         request(host, 'start-game'),
     ]);
-    assert.ok(started.turnEndsAt - started.serverNow > 500 && started.turnEndsAt - started.serverNow <= 1000);
+    assert.ok(dealt.turnEndsAt - dealt.serverNow > 500 && dealt.turnEndsAt - dealt.serverNow <= 1000, 'the swap deadline follows the timer');
     assert.equal((await request(host, 'update-settings', { turnSeconds: 0 })).error, 'Settings cannot change during a game');
 
-    assert.match((await timedOut).message, /^Hana ran out of time and (played|burned|picked up|flipped)/);
-    const after = await moved;
-    assert.ok(after.pile.count > 0 || after.currentPlayerId === joined.playerId);
+    assert.match((await swapOver).message, /^Time is up for swapping/);
+    assert.match((await timedOut).message, /ran out of time and (played|picked up|flipped)/);
+    assert.ok((await moved).pile.count > 0);
+    void joined;
 
     await request(host, 'leave-room');
     await request(guest, 'leave-room');
@@ -382,7 +428,7 @@ test('a full game runs to completion, is recorded, scored and published to the l
     assert.notEqual(winner, loser);
     assert.equal(winnerPlayer.wins, 1, 'the room scoreboard counts the win');
     assert.equal(loserPlayer.wins, 0);
-    assert.equal((await gameOver).message, `Game over: ${loser} lost. ${winner} finished first.`);
+    assert.equal((await gameOver).message, `Game over: ${loser} is the shithead. ${winner} went out first.`);
 
     const board = await published;
     assert.equal(board.persistent, false);

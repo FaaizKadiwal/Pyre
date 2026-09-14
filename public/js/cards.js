@@ -2,8 +2,9 @@
 
 const SYMBOLS = { hearts: '♥', diamonds: '♦', clubs: '♣', spades: '♠' };
 const SUIT_ORDER = { clubs: 0, diamonds: 1, spades: 2, hearts: 3 };
+// Shithead order: 3 is lowest, ace highest, twos are magic and shown last.
 const RANK = Object.fromEntries(
-    ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A'].map((v, i) => [v, i]),
+    ['3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A', '2'].map((v, i) => [v, i]),
 );
 
 export function cardKey(card) {
@@ -26,12 +27,13 @@ function base(tag, classes) {
 }
 
 /**
- * A face-up card. Pass `onSelect` to make it a button; `playable` highlights it
- * and a non-playable button is rendered disabled so the reason is visible.
+ * A face-up card. Pass `onSelect` to make it a button. `playable` highlights
+ * it, `selected` marks it as part of the current choice, and a button that is
+ * neither playable nor selectable is rendered disabled so the reason is visible.
  */
-export function cardElement(card, { onSelect = null, playable = false, extraClass = '' } = {}) {
+export function cardElement(card, { onSelect = null, playable = false, selected = false, enabled = null } = {}) {
     const red = card.suit === 'hearts' || card.suit === 'diamonds';
-    const el = base(onSelect ? 'button' : 'div', ['face-up', red ? 'red' : 'black', extraClass].filter(Boolean));
+    const el = base(onSelect ? 'button' : 'div', ['face-up', red ? 'red' : 'black']);
     const label = cardLabel(card);
     el.setAttribute('aria-label', `${card.value} of ${card.suit}`);
     el.dataset.key = cardKey(card);
@@ -49,7 +51,9 @@ export function cardElement(card, { onSelect = null, playable = false, extraClas
 
     if (onSelect) {
         el.classList.toggle('playable', playable);
-        el.disabled = !playable;
+        el.classList.toggle('selected', selected);
+        el.disabled = !(enabled ?? playable);
+        el.setAttribute('aria-pressed', String(selected));
         el.addEventListener('click', () => onSelect(card));
     }
     return el;

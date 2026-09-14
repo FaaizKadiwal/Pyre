@@ -94,11 +94,17 @@ export default function registerHandlers(io, socket, store, service) {
 
     on('kick-player', ({ playerId }) => seated((room, player) => service.kick(room, player, playerId)));
 
-    on('play-card', ({ card }) => seated((room, player) => service.play(room, player, card)));
+    on('swap-cards', ({ handCard, faceUpCard }) => seated((room, player) => service.swap(room, player, handCard, faceUpCard)));
+
+    on('ready', () => seated((room, player) => service.ready(room, player)));
+
+    on('begin-play', () => seated((room, player) => service.beginPlay(room, player)));
+
+    on('play-cards', ({ cards }) => seated((room, player) => service.play(room, player, cards)));
 
     on('play-face-down', ({ index }) => seated((room, player) => service.playFaceDown(room, player, index)));
 
-    on('pick-up-pile', () => seated((room, player) => service.pickUp(room, player)));
+    on('pick-up-pile', ({ card = null }) => seated((room, player) => service.pickUp(room, player, card)));
 
     on('chat-message', ({ message }) => seated((room, player) => {
         const text = rooms.cleanMessage(message);

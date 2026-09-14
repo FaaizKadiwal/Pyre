@@ -15,7 +15,7 @@
     <main id="app">
         <section id="lobby" class="screen">
             <h1>Card Game</h1>
-            <p class="tagline">Shed all your cards. Power cards change the rules.</p>
+            <p class="tagline">Beat the pile, burn it with a ten, and don't be the last one holding cards.</p>
 
             <label class="field" for="name-input">Your name</label>
             <input id="name-input" type="text" maxlength="20" autocomplete="nickname" placeholder="e.g. Faaiz">
@@ -56,15 +56,15 @@
             <details class="rules">
                 <summary>How to play</summary>
                 <ul>
-                    <li>Everyone gets 3 face-down cards, 3 face-up cards on top of them, and 3 in hand. 2 to 5 players.</li>
-                    <li>On your turn play a card that matches the <strong>suit or value</strong> of the top of the pile. Your hand refills to 3 while the deck lasts.</li>
-                    <li><strong>2</strong> can be played on anything and resets the pile: anything can follow it.</li>
-                    <li><strong>7</strong> can be played on anything. The next card must be <strong>lower than 7</strong> (or another power card).</li>
+                    <li>Everyone gets 3 face-down cards, 3 face-up cards on top of them, and 3 in hand. Before play you may swap hand cards with your face-up cards.</li>
+                    <li>On your turn play a card, or several cards of the same rank, <strong>equal to or higher</strong> than the top of the pile. Suits do not matter. 3 is lowest, ace is highest. Your hand refills to 3 while the deck lasts.</li>
+                    <li><strong>2</strong> can be played on anything, and anything can be played on a 2.</li>
                     <li><strong>10</strong> can be played on anything and <strong>burns</strong> the pile. You play again.</li>
-                    <li>No playable card? Pick up the whole pile.</li>
-                    <li>Once your hand and the deck are empty, play your face-up cards, then flip your face-down cards blind. A bad flip means you pick up the pile.</li>
-                    <li>First to get rid of everything wins. The last player holding cards loses.</li>
-                    <li>If the turn timer runs out, the game plays a card for you.</li>
+                    <li><strong>Four of a kind</strong> on top of the pile also burns it, and the player who completed it plays again.</li>
+                    <li>Cannot or do not want to play? Pick up the whole pile. The next player starts a new one.</li>
+                    <li>Once your hand and the deck are empty, play your face-up cards. If you have to pick up, one face-up card goes with the pile. Then flip your face-down cards blind; a bad flip means you pick up the pile.</li>
+                    <li>Whoever gets rid of everything first is safe. The last player left holding cards is the shithead.</li>
+                    <li>If the turn timer runs out, the game plays for you.</li>
                 </ul>
             </details>
         </section>
@@ -93,6 +93,7 @@
                     <div class="stack">
                         <div id="pile" class="pile-area"></div>
                         <span class="label">Pile</span>
+                        <span id="pile-info" class="label pile-info"></span>
                     </div>
                 </div>
                 <div id="settings" class="settings" hidden>
@@ -111,8 +112,11 @@
                 <div id="turn-bar">
                     <p id="status" role="status" aria-live="assertive"></p>
                     <div class="buttons">
-                        <button id="start-game" class="primary" type="button" hidden>Start game</button>
-                        <button id="pick-up" class="warn" type="button" hidden>Pick up pile</button>
+                        <button id="start-game" class="primary" type="button" hidden>Deal cards</button>
+                        <button id="ready" class="primary" type="button" hidden>Ready</button>
+                        <button id="begin-play" type="button" hidden>Start play now</button>
+                        <button id="play-selected" class="primary" type="button" hidden>Play</button>
+                        <button id="pick-up" type="button" hidden>Pick up pile</button>
                     </div>
                     <div id="countdown" class="countdown" hidden aria-live="off">
                         <div class="track"><div class="fill"></div></div>
