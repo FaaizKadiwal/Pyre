@@ -2,8 +2,10 @@
   "name": "multiplayer-card-game",
   "version": "2.0.0",
   "description": "Real-time multiplayer shedding card game with power cards, built on Express and Socket.IO",
+  "type": "module",
   "main": "server/server.js",
   "private": true,
+  "repository": "github:FaaizKadiwal/card-game",
   "engines": {
     "node": ">=18.18"
   },
@@ -31,7 +33,7 @@
   "devDependencies": {
     "@eslint/js": "^9.39.0",
     "eslint": "^9.39.0",
-    "globals": "^16.0.0",
+    "globals": "^17.12.0",
     "pg-mem": "^3.0.14",
     "socket.io-client": "^4.8.3"
   }

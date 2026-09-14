@@ -3,8 +3,6 @@
 Card Game is a real-time **multiplayer card game** for 2 to 5 players, built with **Node.js, Express and Socket.IO**.  
 Create a room, share the invite link, and play with friends from any phone or laptop. No accounts, no installs, no build step.
 
-![Card Game screenshot](docs/screenshot.png)
-
 ---
 
 ## ✨ Features

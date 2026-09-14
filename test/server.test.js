@@ -1,9 +1,7 @@
-'use strict';
-
-const test = require('node:test');
-const assert = require('node:assert/strict');
-const { io: connect } = require('socket.io-client');
-const { httpServer, io, store } = require('../server/server');
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { io as connect } from 'socket.io-client';
+import { httpServer, io, store } from '../server/server.js';
 
 let url;
 let port;

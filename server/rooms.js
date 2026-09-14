@@ -1,8 +1,6 @@
-'use strict';
-
-const crypto = require('node:crypto');
-const logic = require('./gameLogic');
-const { createMemoryResultStore } = require('./results');
+import crypto from 'node:crypto';
+import * as logic from './gameLogic.js';
+import { createMemoryResultStore } from './results.js';
 
 // Unambiguous alphabet: no 0/O or 1/I.
 const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -213,14 +211,14 @@ function updateSettings(room, player, patch) {
     if (roomStatus(room) === 'playing') return { error: 'Settings cannot change during a game' };
 
     const next = { ...room.settings };
-    if (patch.turnSeconds !== undefined) {
+    if (patch.turnSeconds != null) {
         const seconds = Number(patch.turnSeconds);
         if (!Number.isInteger(seconds) || seconds < 0 || seconds > TURN_SECONDS_MAX) {
             return { error: `Turn timer must be between 0 (off) and ${TURN_SECONDS_MAX} seconds` };
         }
         next.turnSeconds = seconds;
     }
-    if (patch.private !== undefined) {
+    if (patch.private != null) {
         if (typeof patch.private !== 'boolean') return { error: 'Private must be true or false' };
         next.private = patch.private;
     }
@@ -324,7 +322,7 @@ function buildView(room, viewer) {
     };
 }
 
-module.exports = {
+export {
     NAME_MAX,
     MESSAGE_MAX,
     MAX_ROOMS,

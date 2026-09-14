@@ -1,8 +1,6 @@
-'use strict';
-
-const test = require('node:test');
-const assert = require('node:assert/strict');
-const logic = require('../server/gameLogic');
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import * as logic from '../server/gameLogic.js';
 
 const C = (value, suit = 'spades') => ({ value, suit });
 

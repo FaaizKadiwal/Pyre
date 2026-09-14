@@ -1,7 +1,5 @@
-'use strict';
-
-const logic = require('./gameLogic');
-const rooms = require('./rooms');
+import * as logic from './gameLogic.js';
+import * as rooms from './rooms.js';
 
 /** How long a disconnected player keeps their seat before being removed. */
 const DISCONNECT_GRACE_MS = 60_000;
@@ -357,4 +355,4 @@ function createGameService(io, store) {
     };
 }
 
-module.exports = { createGameService, DISCONNECT_GRACE_MS, LOBBY };
+export { createGameService, DISCONNECT_GRACE_MS, LOBBY };

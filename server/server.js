@@ -1,17 +1,19 @@
-'use strict';
-
-const http = require('node:http');
-const path = require('node:path');
-const express = require('express');
-const helmet = require('helmet');
-const compression = require('compression');
-const { Server } = require('socket.io');
-const registerHandlers = require('./socketHandlers');
-const { createGameService, DISCONNECT_GRACE_MS } = require('./gameService');
-const rooms = require('./rooms');
-const { createResultStore } = require('./results');
+import http from 'node:http';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import express from 'express';
+import helmet from 'helmet';
+import compression from 'compression';
+import { Server } from 'socket.io';
+import registerHandlers from './socketHandlers.js';
+import { createGameService, DISCONNECT_GRACE_MS } from './gameService.js';
+import * as rooms from './rooms.js';
+import { createResultStore } from './results.js';
 
 const PORT = Number(process.env.PORT) || 3000;
+const PUBLIC_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
+/** Largest message a client may send; ours are a few hundred bytes at most. */
+const MAX_MESSAGE_BYTES = 10_000;
 const log = (...args) => console.log(new Date().toISOString(), ...args);
 
 const results = createResultStore(process.env);
@@ -25,13 +27,15 @@ app.use(helmet({
         directives: {
             // Same origin only, plus our own WebSocket endpoint: older browsers do not treat ws: as 'self'.
             'connect-src': ["'self'", (req) => `ws://${req.headers.host} wss://${req.headers.host}`],
+            // All styling is in style.css; the client only sets element.style through the CSSOM.
+            'style-src': ["'self'"],
             // Would break plain-HTTP play on a LAN; hosted deployments are HTTPS end to end anyway.
             'upgrade-insecure-requests': null,
         },
     },
 }));
 app.use(compression());
-app.use(express.static(path.join(__dirname, '..', 'public')));
+app.use(express.static(PUBLIC_DIR));
 
 app.get('/health', (_req, res) => {
     res.set('Cache-Control', 'no-store');
@@ -58,6 +62,7 @@ app.use((err, _req, res, _next) => {
 
 const httpServer = http.createServer(app);
 const io = new Server(httpServer, {
+    maxHttpBufferSize: MAX_MESSAGE_BYTES,
     // Lets a client that drops briefly come back with the same socket id, so
     // the disconnect grace period in gameService can restore their seat.
     connectionStateRecovery: { maxDisconnectionDuration: DISCONNECT_GRACE_MS - 5_000 },
@@ -77,7 +82,9 @@ async function shutdown(signal) {
     process.exit(0);
 }
 
-if (require.main === module) {
+const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+
+if (isMain) {
     results.ready.catch((err) => log('Result storage unavailable, games will not be recorded:', err.message));
     httpServer.listen(PORT, () => {
         log(`Card game server listening on http://localhost:${PORT}`);
@@ -87,6 +94,12 @@ if (require.main === module) {
     });
     process.on('SIGINT', () => shutdown('SIGINT'));
     process.on('SIGTERM', () => shutdown('SIGTERM'));
+    // A stray rejected promise should be logged, not take every room down with it.
+    process.on('unhandledRejection', (reason) => log('Unhandled rejection:', reason instanceof Error ? reason.stack : reason));
+    process.on('uncaughtException', (err) => {
+        log('Uncaught exception, exiting:', err.stack);
+        process.exit(1);
+    });
 }
 
-module.exports = { app, httpServer, io, store, service, results };
+export { app, httpServer, io, store, service, results };

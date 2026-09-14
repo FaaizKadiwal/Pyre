@@ -1,6 +1,4 @@
-'use strict';
-
-const rooms = require('./rooms');
+import * as rooms from './rooms.js';
 
 /** Sliding-window limiter: at most `max` calls per `windowMs`. */
 function createLimiter(max, windowMs) {
@@ -42,7 +40,7 @@ function withAck(handler, allow) {
  * Transport layer: parse each socket request, rate-limit it, hand it to the
  * game service, and acknowledge. No game rules or room bookkeeping live here.
  */
-module.exports = function registerHandlers(io, socket, store, service) {
+export default function registerHandlers(io, socket, store, service) {
     const { windowMs, actions, chat } = store.rateLimit;
     const allowAction = createLimiter(actions, windowMs);
     const allowChat = createLimiter(chat, windowMs);
@@ -110,6 +108,6 @@ module.exports = function registerHandlers(io, socket, store, service) {
     }), allowChat);
 
     socket.on('disconnect', () => service.holdSeat(socket.id));
-};
+}
 
-module.exports.createLimiter = createLimiter;
+export { createLimiter };

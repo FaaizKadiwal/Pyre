@@ -1,4 +1,4 @@
-'use strict';
+import pg from 'pg';
 
 /**
  * Persisted game results: who played, who finished first, who lost.
@@ -87,8 +87,7 @@ const SCHEMA = [
  * Neon/Supabase with `?sslmode=require`) or an existing `pool` for tests.
  */
 function createPostgresResultStore({ connectionString, pool } = {}) {
-    const { Pool } = require('pg');
-    const db = pool ?? new Pool({ connectionString, max: 5 });
+    const db = pool ?? new pg.Pool({ connectionString, max: 5 });
     const ready = (async () => {
         for (const statement of SCHEMA) await db.query(statement);
     })();
@@ -176,4 +175,4 @@ function createResultStore(env = process.env) {
         : createMemoryResultStore();
 }
 
-module.exports = { createMemoryResultStore, createPostgresResultStore, createResultStore };
+export { createMemoryResultStore, createPostgresResultStore, createResultStore };

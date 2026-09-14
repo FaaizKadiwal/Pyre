@@ -1,9 +1,9 @@
-'use strict';
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import pgMem from 'pg-mem';
+import { createMemoryResultStore, createPostgresResultStore } from '../server/results.js';
 
-const test = require('node:test');
-const assert = require('node:assert/strict');
-const { newDb } = require('pg-mem');
-const { createMemoryResultStore, createPostgresResultStore } = require('../server/results');
+const { newDb } = pgMem;
 
 const game = (roomId, names, playedAt) => ({
     roomId,

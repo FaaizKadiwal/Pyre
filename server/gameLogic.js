@@ -1,5 +1,3 @@
-'use strict';
-
 /**
  * Pure game rules. Nothing in this module knows about sockets or rooms.
  *
@@ -277,7 +275,7 @@ function removePlayer(game, id) {
     }
 }
 
-module.exports = {
+export {
     SUITS,
     VALUES,
     RANK,

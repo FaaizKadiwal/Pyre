@@ -1,15 +1,13 @@
-'use strict';
+import js from '@eslint/js';
+import globals from 'globals';
 
-const js = require('@eslint/js');
-const globals = require('globals');
-
-module.exports = [
+export default [
     js.configs.recommended,
     {
         files: ['server/**/*.js', 'test/**/*.js', 'eslint.config.js'],
         languageOptions: {
             ecmaVersion: 2022,
-            sourceType: 'commonjs',
+            sourceType: 'module',
             globals: { ...globals.node },
         },
     },
@@ -24,6 +22,12 @@ module.exports = [
     {
         rules: {
             'no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
+            eqeqeq: ['error', 'always', { null: 'ignore' }],
+            'prefer-const': 'error',
+            'no-var': 'error',
+            curly: ['error', 'multi-line'],
+            'no-implicit-coercion': 'error',
+            'no-return-await': 'error',
         },
     },
 ];
