@@ -1,0 +1,16 @@
+node_modules
+npm-debug.log*
+.git
+.gitignore
+.github
+.env
+.env.*
+test
+docs
+*.md
+.claude
+render.yaml
+eslint.config.js
+.editorconfig
+.vscode
+.idea

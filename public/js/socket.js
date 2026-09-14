@@ -1,7 +1,9 @@
 // Single Socket.IO connection shared by the whole client.
 // `io` is provided by /socket.io/socket.io.js, served by the game server.
 
-export const socket = io();
+// Open with WebSocket straight away instead of long-polling first and upgrading;
+// if a proxy blocks WebSockets the client still falls back to polling.
+export const socket = io({ transports: ['websocket', 'polling'], tryAllTransports: true });
 
 /**
  * Send a request and resolve with the server's `{ ok, ... }` acknowledgement.

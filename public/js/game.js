@@ -4,13 +4,25 @@
 
 import { socket, request } from './socket.js';
 import * as ui from './ui.js';
+import * as sound from './sound.js';
 
 const NAME_KEY = 'cardgame:name';
+const SESSION_KEY = 'cardgame:session';
 const FLASH_MS = 3000;
+const ROOM_CODE_LENGTH = 5;
+const COUNTDOWN_TICK_MS = 250;
 
 let state = null;
 let inRoom = false;
 let flashTimer = null;
+let clockOffset = 0;   // serverNow - Date.now(), so the countdown ignores clock skew
+let countdownTimer = null;
+let warned = false;
+
+// ---------- Local persistence ----------
+// The name is remembered across visits. The session (room + secret token) is
+// kept per tab so a reload or a dropped connection gets the same seat back,
+// while two tabs in one browser can still be two different players.
 
 function loadName() {
     try { return localStorage.getItem(NAME_KEY) ?? ''; } catch { return ''; }
@@ -22,8 +34,30 @@ function myName() {
     return name;
 }
 
+function loadSession() {
+    try { return JSON.parse(sessionStorage.getItem(SESSION_KEY)) ?? null; } catch { return null; }
+}
+
+function saveSession(session) {
+    try { sessionStorage.setItem(SESSION_KEY, JSON.stringify(session)); } catch { /* storage unavailable */ }
+}
+
+function clearSession() {
+    try { sessionStorage.removeItem(SESSION_KEY); } catch { /* storage unavailable */ }
+}
+
+// ---------- Presentation helpers ----------
+
 function nameOf(id) {
     return state?.players.find((p) => p.id === id)?.name ?? 'Someone';
+}
+
+function inviteLink(roomId) {
+    const url = new URL(location.href);
+    url.search = '';
+    url.hash = '';
+    url.searchParams.set('room', roomId);
+    return url.toString();
 }
 
 function statusFor(s) {
@@ -31,7 +65,7 @@ function statusFor(s) {
     const host = s.players.find((p) => p.isHost);
 
     if (s.status === 'waiting') {
-        if (s.players.length < s.minPlayers) return `Waiting for players. Share the code ${s.roomId}.`;
+        if (s.players.length < s.minPlayers) return `Waiting for players. Share the code ${s.roomId} or copy the invite link.`;
         return me?.isHost ? 'Everyone is here. Press Start game when ready.' : `Waiting for ${host?.name ?? 'the host'} to start.`;
     }
     if (s.status === 'finished') {
@@ -53,12 +87,54 @@ function refreshStatus() {
     if (state) ui.setStatus(statusFor(state));
 }
 
-/** Show an error briefly, then fall back to the normal status line. */
-function flash(message) {
+const BASE_TITLE = document.title;
+
+/** The tab title tells a player who switched away that the table is waiting for them. */
+function updateTitle() {
+    document.title = state?.status === 'playing' && state.isMyTurn ? `Your turn · ${BASE_TITLE}` : BASE_TITLE;
+}
+
+/** Show a message briefly, then fall back to the normal status line. */
+function flash(message, isError = true) {
     clearTimeout(flashTimer);
-    ui.setStatus(message, true);
+    ui.setStatus(message, isError);
     flashTimer = setTimeout(refreshStatus, FLASH_MS);
 }
+
+// ---------- Turn countdown ----------
+
+function stopCountdown() {
+    clearInterval(countdownTimer);
+    countdownTimer = null;
+    ui.renderCountdown(null);
+}
+
+function startCountdown() {
+    clearInterval(countdownTimer);
+    countdownTimer = null;
+    if (!state || state.status !== 'playing' || !state.turnEndsAt) {
+        ui.renderCountdown(null);
+        return;
+    }
+    const totalMs = state.settings.turnSeconds * 1000;
+    warned = false;
+    const tick = () => {
+        const remainingMs = Math.max(0, state.turnEndsAt - (Date.now() + clockOffset));
+        ui.renderCountdown({ remainingMs, totalMs, mine: state.isMyTurn });
+        if (state.isMyTurn && !warned && remainingMs <= 10_000 && remainingMs > 0) {
+            warned = true;
+            sound.play('warning');
+        }
+        if (remainingMs <= 0) {
+            clearInterval(countdownTimer);
+            countdownTimer = null;
+        }
+    };
+    tick();
+    countdownTimer = setInterval(tick, COUNTDOWN_TICK_MS);
+}
+
+// ---------- Actions ----------
 
 async function act(event, payload) {
     const res = await request(event, payload);
@@ -68,7 +144,12 @@ async function act(event, payload) {
 const actions = {
     playCard: (card) => act('play-card', { card }),
     playFaceDown: (index) => act('play-face-down', { index }),
+    kick: (player) => {
+        if (window.confirm(`Remove ${player.name} from the room?`)) act('kick-player', { playerId: player.id });
+    },
 };
+
+// ---------- Screen transitions ----------
 
 function enterRoom() {
     inRoom = true;
@@ -80,17 +161,26 @@ function enterRoom() {
 function exitRoom(message = '') {
     inRoom = false;
     state = null;
+    clearSession();
     clearTimeout(flashTimer);
+    stopCountdown();
+    updateTitle();
     ui.clearRoom();
     ui.showScreen('lobby');
     ui.setLobbyMessage(message, Boolean(message));
+}
+
+/** Handle the acknowledgement of create/join/resume: remember the seat and show the table. */
+function seated(res) {
+    saveSession({ roomId: res.roomId, token: res.token });
+    enterRoom();
 }
 
 async function joinRoom(roomId) {
     ui.setLobbyMessage('Joining…');
     const res = await request('join-room', { roomId, name: myName() });
     if (res.ok) {
-        enterRoom();
+        seated(res);
     } else {
         ui.setLobbyMessage(res.error, true);
     }
@@ -99,12 +189,20 @@ async function joinRoom(roomId) {
 // ---------- Lobby ----------
 
 ui.els.nameInput.value = loadName();
+ui.renderSoundToggle(sound.isEnabled());
+document.addEventListener('pointerdown', () => sound.unlock(), { once: true });
+
+const invited = new URLSearchParams(location.search).get('room');
+if (invited) {
+    ui.els.roomIdInput.value = invited.trim().toUpperCase().slice(0, ROOM_CODE_LENGTH);
+    ui.setLobbyMessage(`You were invited to room ${ui.els.roomIdInput.value}. Enter your name and press Join.`);
+}
 
 ui.els.createButton.addEventListener('click', async () => {
     ui.setLobbyMessage('Creating room…');
     const res = await request('create-room', { name: myName() });
     if (res.ok) {
-        enterRoom();
+        seated(res);
     } else {
         ui.setLobbyMessage(res.error, true);
     }
@@ -122,6 +220,23 @@ ui.els.joinForm.addEventListener('submit', (e) => {
 
 // ---------- Room ----------
 
+ui.els.soundToggle.addEventListener('click', () => {
+    sound.setEnabled(!sound.isEnabled());
+    ui.renderSoundToggle(sound.isEnabled());
+    if (sound.isEnabled()) sound.play('yourTurn');
+});
+
+ui.els.copyInviteButton.addEventListener('click', async () => {
+    if (!state) return;
+    const link = inviteLink(state.roomId);
+    try {
+        await navigator.clipboard.writeText(link);
+        ui.pulseButton(ui.els.copyInviteButton, 'Copied!');
+    } catch {
+        flash(`Invite link: ${link}`, false);
+    }
+});
+
 ui.els.leaveButton.addEventListener('click', async () => {
     await request('leave-room');
     exitRoom();
@@ -129,6 +244,13 @@ ui.els.leaveButton.addEventListener('click', async () => {
 
 ui.els.startButton.addEventListener('click', () => act('start-game'));
 ui.els.pickUpButton.addEventListener('click', () => act('pick-up-pile'));
+
+ui.els.turnSecondsSelect.addEventListener('change', () => {
+    act('update-settings', { turnSeconds: Number(ui.els.turnSecondsSelect.value) });
+});
+ui.els.privateCheckbox.addEventListener('change', () => {
+    act('update-settings', { private: ui.els.privateCheckbox.checked });
+});
 
 ui.els.chatForm.addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -142,16 +264,26 @@ ui.els.chatForm.addEventListener('submit', async (e) => {
 
 socket.on('room-list', (rooms) => ui.renderRoomList(rooms, joinRoom));
 
+socket.on('leaderboard', (board) => ui.renderLeaderboard(board));
+
 socket.on('room-state', (next) => {
+    const previous = state;
     state = next;
+    clockOffset = next.serverNow - Date.now();
     if (!inRoom) enterRoom();
     ui.renderRoom(state, actions);
     refreshStatus();
+    updateTitle();
+    startCountdown();
+
+    const becameMyTurn = state.status === 'playing' && state.isMyTurn && !(previous?.status === 'playing' && previous.isMyTurn);
+    if (becameMyTurn) sound.play('yourTurn');
+    if (state.status === 'finished' && previous?.status === 'playing') sound.play('gameOver');
 });
 
 socket.on('game-event', (event) => ui.addLog(event.message));
 
-socket.on('chat-message', (msg) => ui.addChat({ ...msg, mine: msg.playerId === socket.id }));
+socket.on('chat-message', (msg) => ui.addChat({ ...msg, mine: msg.playerId === state?.me }));
 
 socket.on('left-room', ({ reason }) => exitRoom(reason));
 
@@ -160,12 +292,26 @@ socket.on('disconnect', () => {
     else ui.setLobbyMessage('Connection lost. Reconnecting…', true);
 });
 
-socket.on('connect', () => {
-    if (inRoom && !socket.recovered) {
-        exitRoom('Your connection was down too long and your seat was released. Please rejoin.');
-    } else if (inRoom) {
-        refreshStatus();
-    } else {
+socket.on('connect', async () => {
+    if (socket.recovered) {
+        // Socket.IO restored the same connection; the seat was never lost.
+        if (inRoom) refreshStatus();
+        return;
+    }
+    const session = loadSession();
+    if (session) {
+        // A reload, a new connection after a longer drop, or a tab restored by the browser.
+        const res = await request('resume-session', session);
+        if (res.ok) {
+            saveSession({ roomId: res.roomId, token: res.token });
+            return; // the accompanying room-state has already rebuilt the table
+        }
+        exitRoom(`Could not rejoin your previous room: ${res.error}`);
+        return;
+    }
+    if (inRoom) {
+        exitRoom('Your seat was released while you were disconnected. Please rejoin.');
+    } else if (!invited) {
         ui.setLobbyMessage('');
     }
 });

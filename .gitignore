@@ -1,5 +1,38 @@
+# Dependencies
 node_modules/
-npm-debug.log*
+
+# Environment files and secrets (keep the example)
 .env
+.env.*
+!.env.example
+
+# Logs and runtime output
+logs/
+*.log
+npm-debug.log*
+pids/
+*.pid
+
+# Test and coverage output
+coverage/
+.nyc_output/
+
+# Build output (none today, reserved for future tooling)
+dist/
+build/
+
+# OS files
 .DS_Store
-CLAUDE.md
+Thumbs.db
+desktop.ini
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Local notes and AI-assistant files: only README.md is published
+*.md
+!README.md
+.claude/
