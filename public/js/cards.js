@@ -6,6 +6,7 @@ const SUIT_ORDER = { clubs: 0, diamonds: 1, spades: 2, hearts: 3 };
 const RANK = Object.fromEntries(
     ['3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A', '2'].map((v, i) => [v, i]),
 );
+const MAGIC = new Set(['2', '10']);
 
 export function cardKey(card) {
     return `${card.value}-${card.suit}`;
@@ -31,12 +32,13 @@ function base(tag, classes) {
  * it, `selected` marks it as part of the current choice, and a button that is
  * neither playable nor selectable is rendered disabled so the reason is visible.
  */
-export function cardElement(card, { onSelect = null, playable = false, selected = false, enabled = null } = {}) {
+export function cardElement(card, { onSelect = null, playable = false, selected = false, enabled = null, index = null } = {}) {
     const red = card.suit === 'hearts' || card.suit === 'diamonds';
-    const el = base(onSelect ? 'button' : 'div', ['face-up', red ? 'red' : 'black']);
+    const el = base(onSelect ? 'button' : 'div', ['face-up', red ? 'red' : 'black', MAGIC.has(card.value) ? 'magic' : '']);
     const label = cardLabel(card);
     el.setAttribute('aria-label', `${card.value} of ${card.suit}`);
     el.dataset.key = cardKey(card);
+    if (index !== null) el.style.setProperty('--i', String(index));
 
     const top = document.createElement('span');
     top.className = 'corner';
@@ -60,9 +62,10 @@ export function cardElement(card, { onSelect = null, playable = false, selected 
 }
 
 /** A face-down card. Pass `onSelect` to make it clickable. */
-export function cardBack({ onSelect = null, label = 'Face-down card' } = {}) {
+export function cardBack({ onSelect = null, label = 'Face-down card', index = null } = {}) {
     const el = base(onSelect ? 'button' : 'div', ['back']);
     el.setAttribute('aria-label', label);
+    if (index !== null) el.style.setProperty('--i', String(index));
     if (onSelect) {
         el.classList.add('playable');
         el.addEventListener('click', onSelect);

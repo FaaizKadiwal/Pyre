@@ -101,6 +101,7 @@ function playToCompletion(sockets, maxMoves = 5000) {
 test.before(async () => {
     // Bots move far faster than people; lift the per-socket budget for the suite.
     store.rateLimit = { windowMs: 5_000, actions: 100_000, chat: 100_000 };
+    store.botDelay = { swapMs: 5, moveMs: 5 };
     await new Promise((resolve) => httpServer.listen(0, resolve));
     port = httpServer.address().port;
     url = `http://localhost:${port}`;
@@ -109,7 +110,10 @@ test.before(async () => {
 test.after(async () => {
     for (const socket of clients) socket.disconnect();
     for (const handle of store.pendingRemovals.values()) clearTimeout(handle);
-    for (const room of store.rooms.values()) if (room.turn.handle) clearTimeout(room.turn.handle);
+    for (const room of store.rooms.values()) {
+        if (room.turn.handle) clearTimeout(room.turn.handle);
+        if (room.bot.handle) clearTimeout(room.bot.handle);
+    }
     io.close();
     await new Promise((resolve) => httpServer.close(resolve));
 });
@@ -428,6 +432,9 @@ test('a full game runs to completion, is recorded, scored and published to the l
     assert.notEqual(winner, loser);
     assert.equal(winnerPlayer.wins, 1, 'the room scoreboard counts the win');
     assert.equal(loserPlayer.wins, 0);
+    assert.equal(loserPlayer.losses, 1, 'and the shithead count');
+    assert.equal(typeof finalView.stats.burns, 'number');
+    assert.ok(finalView.durationSeconds >= 0);
     assert.equal((await gameOver).message, `Game over: ${loser} is the shithead. ${winner} went out first.`);
 
     const board = await published;
@@ -442,7 +449,7 @@ test('a full game runs to completion, is recorded, scored and published to the l
 
     const recent = await (await fetch(`${url}/api/games/recent?limit=5`)).json();
     assert.equal(recent.games[0].roomId, roomId);
-    assert.deepEqual(recent.games[0].players, [{ name: winner, place: 1 }, { name: loser, place: 2 }]);
+    assert.deepEqual(recent.games[0].players, [{ name: winner, place: 1, bot: false }, { name: loser, place: 2, bot: false }]);
     assert.ok(recent.games[0].durationSeconds >= 0);
 });
 
@@ -507,4 +514,92 @@ test('a four-player game finishes with a full ranking', async () => {
     const loserName = game.players[3].name;
     assert.deepEqual(rows.find((r) => r.name === loserName), { name: loserName, games: 1, wins: 0, losses: 1 });
     for (const p of players) await request(p, 'leave-room');
+});
+
+
+test('a lone human can play against bots, and bots never reach the leaderboard', async () => {
+    const human = await client();
+    const watcher = await client();
+    store.random = mulberry32(99);
+    const { roomId } = await request(human, 'create-room', { name: 'Solo' });
+    const [withBots] = await Promise.all([
+        waitFor(human, 'room-state', (s) => s.players.length === 3),
+        request(human, 'add-bot').then((res) => assert.equal(res.ok, true)).then(() => request(human, 'add-bot')),
+    ]);
+    const botNames = withBots.players.filter((p) => p.isBot).map((p) => p.name);
+    assert.deepEqual(botNames, ['Ada', 'Bram']);
+    assert.ok(withBots.players.filter((p) => p.isBot).every((p) => p.connected && !p.isHost));
+
+    const published = waitFor(watcher, 'leaderboard', (l) => l.recent.some((g) => g.roomId === roomId), 60_000);
+    const reactions = [];
+    human.on('reaction', (r) => reactions.push(r));
+    const finished = playToCompletion([human]);
+    assert.equal((await request(human, 'start-game')).ok, true);
+    assert.equal((await request(human, 'add-bot')).error, 'Bots can only be added between games');
+
+    const finalView = await finished;
+    store.random = Math.random;
+    assert.equal(finalView.endReason, 'completed');
+    assert.equal(new Set([...finalView.finished, finalView.loser]).size, 3, 'bots took their turns and the game ended');
+
+    const board = await published;
+    assert.ok(board.rows.every((r) => !botNames.includes(r.name)), 'bots are not ranked');
+    const game = board.recent.find((g) => g.roomId === roomId);
+    assert.equal(game.players.filter((p) => p.bot).length, 2, 'but the game record shows who played');
+    assert.ok(reactions.every((r) => typeof r.emoji === 'string'));
+
+    // The host can remove a bot between games.
+    const bot = finalView.players.find((p) => p.isBot);
+    const [afterKick] = await Promise.all([
+        waitFor(human, 'room-state', (s) => s.players.length === 2),
+        request(human, 'kick-player', { playerId: bot.id }),
+    ]);
+    assert.equal(afterKick.players.some((p) => p.id === bot.id), false);
+    await request(human, 'leave-room');
+    assert.equal(store.rooms.has(roomId), false, 'a room with only bots left is deleted');
+});
+
+test('players can react with a whitelisted emoji', async () => {
+    const a = await client();
+    const b = await client();
+    const { roomId } = await request(a, 'create-room', { name: 'Rea' });
+    await request(b, 'join-room', { roomId, name: 'Ctor' });
+    assert.equal((await request(a, 'react', { emoji: '<script>' })).error, 'That reaction is not available');
+    const [seen] = await Promise.all([
+        waitFor(b, 'reaction'),
+        request(a, 'react', { emoji: '🔥' }),
+    ]);
+    assert.equal(seen.emoji, '🔥');
+    assert.equal(typeof seen.playerId, 'string');
+    await request(a, 'leave-room');
+    await request(b, 'leave-room');
+});
+
+test('a late arrival watches the running game and is dealt into the next one', async () => {
+    const host = await client();
+    const guest = await client();
+    const created = await request(host, 'create-room', { name: 'Hana' });
+    await request(guest, 'join-room', { roomId: created.roomId, name: 'Gus' });
+    await dealAndReady(host, [host, guest]);
+
+    const late = await client();
+    const [view, joined] = await Promise.all([
+        waitFor(late, 'room-state', (s) => s.status === 'playing'),
+        request(late, 'join-room', { roomId: created.roomId, name: 'Lia' }),
+    ]);
+    assert.equal(joined.ok, true);
+    assert.equal(view.players.find((p) => p.id === joined.playerId).inGame, false, 'watching, not playing');
+    assert.equal(view.hand.length, 0);
+    assert.equal((await request(late, 'ready')).error, 'Play has already begun');
+    assert.equal((await request(late, 'play-cards', { cards: [view.players[0].faceUp[0]] })).error, 'It is not your turn');
+
+    // The host ends the round by leaving with the guest, then the next deal includes everyone present.
+    await request(guest, 'leave-room');
+    await until(() => store.rooms.get(created.roomId)?.game?.status === 'finished');
+    const [dealt] = await Promise.all([
+        waitFor(late, 'room-state', (s) => s.status === 'swapping'),
+        request(host, 'start-game'),
+    ]);
+    assert.equal(dealt.hand.length, 3, 'the spectator is in the next round');
+    for (const socket of [host, late]) await request(socket, 'leave-room');
 });

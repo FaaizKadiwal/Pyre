@@ -5,10 +5,12 @@
 import { socket, request } from './socket.js';
 import * as ui from './ui.js';
 import * as sound from './sound.js';
-import { cardKey } from './cards.js';
+import { cardKey, sortCards } from './cards.js';
 
 const NAME_KEY = 'cardgame:name';
 const SESSION_KEY = 'cardgame:session';
+const THEME_KEY = 'cardgame:theme';
+const THEMES = ['ember', 'midnight', 'felt'];
 const FLASH_MS = 3000;
 const ROOM_CODE_LENGTH = 5;
 const COUNTDOWN_TICK_MS = 250;
@@ -30,9 +32,9 @@ function resetChoice() {
 }
 
 // ---------- Local persistence ----------
-// The name is remembered across visits. The session (room + secret token) is
-// kept per tab so a reload or a dropped connection gets the same seat back,
-// while two tabs in one browser can still be two different players.
+// Name, theme and sound are remembered across visits. The session (room +
+// secret token) is kept per tab so a reload or a dropped connection gets the
+// same seat back, while two tabs in one browser can still be two players.
 
 function loadName() {
     try { return localStorage.getItem(NAME_KEY) ?? ''; } catch { return ''; }
@@ -56,6 +58,18 @@ function clearSession() {
     try { sessionStorage.removeItem(SESSION_KEY); } catch { /* storage unavailable */ }
 }
 
+function loadTheme() {
+    try {
+        const saved = localStorage.getItem(THEME_KEY);
+        return THEMES.includes(saved) ? saved : THEMES[0];
+    } catch { return THEMES[0]; }
+}
+
+function setTheme(name) {
+    ui.applyTheme(name);
+    try { localStorage.setItem(THEME_KEY, name); } catch { /* storage unavailable */ }
+}
+
 // ---------- Presentation helpers ----------
 
 function me() {
@@ -77,25 +91,28 @@ function inviteLink(roomId) {
 function statusFor(s) {
     const self = me();
     const host = s.players.find((p) => p.isHost);
-    const readyCount = s.players.filter((p) => p.ready).length;
+    const inGame = s.players.filter((p) => p.inGame);
+    const readyCount = inGame.filter((p) => p.ready).length;
 
     if (s.status === 'waiting') {
-        if (s.players.length < s.minPlayers) return `Waiting for players. Share the code ${s.roomId} or copy the invite link.`;
+        if (s.players.length < s.minPlayers) return `Waiting for players. Share the code ${s.roomId}, copy the invite link, or add a bot.`;
         return self?.isHost ? 'Everyone is here. Press Deal cards when ready.' : `Waiting for ${host?.name ?? 'the host'} to deal.`;
     }
+    if (!self?.inGame && (s.status === 'swapping' || s.status === 'playing')) {
+        return 'A round is in progress. You are watching and will be dealt in next time.';
+    }
     if (s.status === 'swapping') {
-        if (!self?.inGame) return 'A game is in progress. You will join the next one.';
-        if (self.ready) return `Waiting for the others to finish swapping (${readyCount}/${s.players.length} ready).`;
+        if (self.ready) return `Waiting for the others to finish swapping (${readyCount}/${inGame.length} ready).`;
         return choice.swapPick
             ? `Now tap a ${choice.swapPick.from === 'hand' ? 'face-up' : 'hand'} card to swap with, or press Ready.`
-            : `Swap cards: tap a hand card, then a face-up card. Press Ready when done (${readyCount}/${s.players.length} ready).`;
+            : `Swap cards: tap a hand card, then a face-up card. Press Ready when done (${readyCount}/${inGame.length} ready).`;
     }
     if (s.status === 'finished') {
         const again = self?.isHost ? ' Press Play again for another round.' : '';
         if (s.endReason === 'completed') {
             return `${nameOf(s.loser)} is the shithead! ${nameOf(s.finished[0])} went out first.${again}`;
         }
-        return `Game ended: not enough players.${again}`;
+        return `Round ended: not enough players.${again}`;
     }
     if (self?.finished) return 'You are out. Waiting for the others to finish.';
     if (!s.isMyTurn) return `${nameOf(s.currentPlayerId)}'s turn.`;
@@ -231,6 +248,8 @@ const actions = {
     kick: (player) => {
         if (window.confirm(`Remove ${player.name} from the room?`)) act('kick-player', { playerId: player.id });
     },
+
+    react: (emoji) => act('react', { emoji }),
 };
 
 // ---------- Screen transitions ----------
@@ -276,6 +295,7 @@ async function joinRoom(roomId) {
 
 ui.els.nameInput.value = loadName();
 ui.renderSoundToggle(sound.isEnabled());
+ui.applyTheme(loadTheme());
 document.addEventListener('pointerdown', () => sound.unlock(), { once: true });
 
 const invited = new URLSearchParams(location.search).get('room');
@@ -306,6 +326,11 @@ ui.els.joinForm.addEventListener('submit', (e) => {
 
 // ---------- Room ----------
 
+ui.els.themeToggle.addEventListener('click', () => {
+    const current = document.documentElement.dataset.theme;
+    setTheme(THEMES[(THEMES.indexOf(current) + 1) % THEMES.length]);
+});
+
 ui.els.soundToggle.addEventListener('click', () => {
     sound.setEnabled(!sound.isEnabled());
     ui.renderSoundToggle(sound.isEnabled());
@@ -323,16 +348,21 @@ ui.els.copyInviteButton.addEventListener('click', async () => {
     }
 });
 
-ui.els.leaveButton.addEventListener('click', async () => {
+async function leave() {
     await request('leave-room');
     exitRoom();
-});
+}
 
+ui.els.leaveButton.addEventListener('click', leave);
 ui.els.startButton.addEventListener('click', () => act('start-game'));
+ui.els.addBotButton.addEventListener('click', () => act('add-bot'));
 ui.els.readyButton.addEventListener('click', () => act('ready'));
 ui.els.beginButton.addEventListener('click', () => act('begin-play'));
 ui.els.playButton.addEventListener('click', () => actions.playSelected());
 ui.els.pickUpButton.addEventListener('click', () => act('pick-up-pile', { card: choice.sacrifice }));
+ui.els.overlayClose.addEventListener('click', () => ui.hideSummary());
+ui.els.overlayAgain.addEventListener('click', () => { ui.hideSummary(); act('start-game'); });
+ui.els.overlayLeave.addEventListener('click', leave);
 
 ui.els.turnSecondsSelect.addEventListener('change', () => {
     act('update-settings', { turnSeconds: Number(ui.els.turnSecondsSelect.value) });
@@ -347,6 +377,32 @@ ui.els.chatForm.addEventListener('submit', async (e) => {
     if (!message) return;
     ui.els.messageInput.value = '';
     await act('chat-message', { message });
+});
+
+/** Keyboard: digits pick cards, Enter plays or readies, P picks up, Escape clears. */
+document.addEventListener('keydown', (e) => {
+    if (!inRoom || !state || e.altKey || e.ctrlKey || e.metaKey) return;
+    if (['INPUT', 'SELECT', 'TEXTAREA'].includes(document.activeElement?.tagName)) return;
+    if (e.key === 'Escape') {
+        if (!ui.els.overlay.hidden) ui.hideSummary();
+        resetChoice();
+        rerender();
+        return;
+    }
+    if (state.status === 'swapping') {
+        if (e.key === 'Enter' && !ui.els.readyButton.hidden) act('ready');
+        return;
+    }
+    if (state.status !== 'playing' || !state.isMyTurn) return;
+    if (/^[1-9]$/.test(e.key)) {
+        const cards = state.source === 'faceUp' ? me().faceUp : sortCards(state.hand);
+        const card = cards[Number(e.key) - 1];
+        if (card) actions.select(card);
+    } else if (e.key === 'Enter') {
+        actions.playSelected();
+    } else if (e.key.toLowerCase() === 'p' && state.canPickUp) {
+        act('pick-up-pile', { card: choice.sacrifice });
+    }
 });
 
 // ---------- Server events ----------
@@ -369,12 +425,36 @@ socket.on('room-state', (next) => {
     updateTitle();
     startCountdown();
 
+    const wasRunning = previous?.status === 'swapping' || previous?.status === 'playing';
+    if (state.status === 'swapping' && previous?.status !== 'swapping') {
+        ui.hideSummary();
+        if (me()?.inGame) {
+            ui.dealEffect();
+            sound.play('deal');
+        }
+    }
     const becameMyTurn = state.status === 'playing' && state.isMyTurn && !(previous?.status === 'playing' && previous.isMyTurn);
     if (becameMyTurn) sound.play('yourTurn');
-    if (state.status === 'finished' && previous?.status === 'playing') sound.play('gameOver');
+    if (state.status === 'finished' && wasRunning) {
+        const iLost = state.loser === state.me;
+        sound.play(iLost ? 'lose' : 'win');
+        ui.showSummary(state, { isHost: Boolean(me()?.isHost), iLost });
+    }
 });
 
-socket.on('game-event', (event) => ui.addLog(event.message));
+socket.on('game-event', (event) => {
+    ui.addLog(event.message);
+    if (event.type === 'burn') {
+        ui.burnEffect();
+        sound.play('burn');
+    } else if (event.type === 'play' && event.playerId !== state?.me) {
+        sound.play('play');
+    } else if (event.type === 'pick-up') {
+        sound.play('pickUp');
+    }
+});
+
+socket.on('reaction', ({ playerId, emoji }) => ui.showReaction(playerId, emoji));
 
 socket.on('chat-message', (msg) => ui.addChat({ ...msg, mine: msg.playerId === state?.me }));
 

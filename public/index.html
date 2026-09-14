@@ -1,84 +1,98 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="ember">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <meta name="color-scheme" content="dark">
-    <meta name="theme-color" content="#143f27">
-    <meta name="description" content="A real-time multiplayer shedding card game for 2 to 5 players. Create a room, share the link, play in the browser.">
-    <title>Card Game</title>
-    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect x='10' y='4' width='44' height='56' rx='6' fill='%23fdfdf8' stroke='%23333' stroke-width='3'/%3E%3Ctext x='32' y='44' font-size='34' text-anchor='middle' fill='%23c9202b'%3E%E2%99%A5%3C/text%3E%3C/svg%3E">
+    <meta name="theme-color" content="#120f0d">
+    <meta name="description" content="Pyre: the Shithead card game for 2 to 5 players, live in the browser. Rooms, bots, invite links, no sign-up.">
+    <title>Pyre</title>
+    <link rel="icon" href="icon.svg" type="image/svg+xml">
+    <link rel="apple-touch-icon" href="icon.svg">
+    <link rel="manifest" href="manifest.webmanifest">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,800&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
-    <noscript><p class="noscript">Card Game needs JavaScript to connect to the table. Please enable it and reload.</p></noscript>
+    <noscript><p class="noscript">Pyre needs JavaScript to connect to the table. Please enable it and reload.</p></noscript>
     <main id="app">
         <section id="lobby" class="screen">
-            <h1>Card Game</h1>
-            <p class="tagline">Beat the pile, burn it with a ten, and don't be the last one holding cards.</p>
+            <header class="hero">
+                <p class="eyebrow">The Shithead card game</p>
+                <h1 class="wordmark">Pyre</h1>
+                <p class="tagline">Beat the pile. Burn it with a ten. Don't be the last one holding cards.</p>
+            </header>
 
-            <label class="field" for="name-input">Your name</label>
-            <input id="name-input" type="text" maxlength="20" autocomplete="nickname" placeholder="e.g. Faaiz">
+            <div class="lobby-grid">
+                <section class="panel enter" aria-labelledby="enter-title">
+                    <h2 id="enter-title">Play</h2>
+                    <label class="field" for="name-input">Your name</label>
+                    <input id="name-input" type="text" maxlength="20" autocomplete="nickname" placeholder="e.g. Faaiz">
+                    <div class="lobby-actions">
+                        <button id="create-room" class="primary" type="button">Create a room</button>
+                        <form id="join-form" autocomplete="off">
+                            <input id="room-id-input" type="text" maxlength="5" placeholder="Room code" aria-label="Room code" spellcheck="false" autocapitalize="characters">
+                            <button type="submit">Join</button>
+                        </form>
+                    </div>
+                    <p id="lobby-message" class="message" role="status" aria-live="polite"></p>
+                    <p class="hint">Alone? Create a room and add bots. Friends? Send them the invite link.</p>
 
-            <div class="lobby-actions">
-                <button id="create-room" class="primary" type="button">Create a room</button>
-                <form id="join-form" autocomplete="off">
-                    <input id="room-id-input" type="text" maxlength="5" placeholder="Room code" aria-label="Room code" spellcheck="false" autocapitalize="characters">
-                    <button type="submit">Join</button>
-                </form>
+                    <details class="rules">
+                        <summary>How to play</summary>
+                        <ul>
+                            <li>Everyone gets 3 face-down cards, 3 face-up cards on top of them, and 3 in hand. Before play you may swap hand cards with your face-up cards.</li>
+                            <li>On your turn play a card, or several cards of the same rank, <strong>equal to or higher</strong> than the top of the pile. Suits do not matter. 3 is lowest, ace is highest. Your hand refills to 3 while the deck lasts.</li>
+                            <li><strong>2</strong> can be played on anything, and anything can be played on a 2.</li>
+                            <li><strong>10</strong> can be played on anything and <strong>burns</strong> the pile. You play again.</li>
+                            <li><strong>Four of a kind</strong> on top of the pile also burns it, and the player who completed it plays again.</li>
+                            <li>Cannot or do not want to play? Pick up the whole pile. The next player starts a new one.</li>
+                            <li>Once your hand and the deck are empty, play your face-up cards. If you have to pick up, one face-up card goes with the pile. Then flip your face-down cards blind; a bad flip means you pick up the pile.</li>
+                            <li>Whoever gets rid of everything first is safe. The last player left holding cards is the shithead.</li>
+                            <li>If the turn timer runs out, the game plays for you.</li>
+                            <li>Keyboard: <kbd>1</kbd>–<kbd>9</kbd> select a card, <kbd>Enter</kbd> plays the selection or presses Ready, <kbd>P</kbd> picks up, <kbd>Esc</kbd> clears.</li>
+                        </ul>
+                    </details>
+                </section>
+
+                <section class="panel boards" aria-labelledby="rooms-title">
+                    <h2 id="rooms-title">Open rooms</h2>
+                    <ul id="room-list" class="room-list" aria-live="polite"></ul>
+
+                    <h2 id="leaderboard-title">Leaderboard</h2>
+                    <p id="leaderboard-note" class="note"></p>
+                    <table class="leaderboard" aria-labelledby="leaderboard-title">
+                        <thead>
+                            <tr>
+                                <th scope="col">Player</th>
+                                <th scope="col">Wins</th>
+                                <th scope="col">Losses</th>
+                                <th scope="col">Games</th>
+                            </tr>
+                        </thead>
+                        <tbody id="leaderboard-body"></tbody>
+                    </table>
+
+                    <h2 id="recent-title">Recent games</h2>
+                    <ul id="recent-games" class="recent" aria-labelledby="recent-title"></ul>
+                </section>
             </div>
-            <p id="lobby-message" class="message" role="status" aria-live="polite"></p>
-
-            <h2>Open rooms</h2>
-            <ul id="room-list" class="room-list" aria-live="polite"></ul>
-
-            <section class="leaderboard" aria-labelledby="leaderboard-title">
-                <h2 id="leaderboard-title">Leaderboard</h2>
-                <p id="leaderboard-note" class="note"></p>
-                <table>
-                    <thead>
-                        <tr>
-                            <th scope="col">Player</th>
-                            <th scope="col">Wins</th>
-                            <th scope="col">Losses</th>
-                            <th scope="col">Games</th>
-                        </tr>
-                    </thead>
-                    <tbody id="leaderboard-body"></tbody>
-                </table>
-            </section>
-
-            <section class="recent" aria-labelledby="recent-title">
-                <h2 id="recent-title">Recent games</h2>
-                <ul id="recent-games"></ul>
-            </section>
-
-            <details class="rules">
-                <summary>How to play</summary>
-                <ul>
-                    <li>Everyone gets 3 face-down cards, 3 face-up cards on top of them, and 3 in hand. Before play you may swap hand cards with your face-up cards.</li>
-                    <li>On your turn play a card, or several cards of the same rank, <strong>equal to or higher</strong> than the top of the pile. Suits do not matter. 3 is lowest, ace is highest. Your hand refills to 3 while the deck lasts.</li>
-                    <li><strong>2</strong> can be played on anything, and anything can be played on a 2.</li>
-                    <li><strong>10</strong> can be played on anything and <strong>burns</strong> the pile. You play again.</li>
-                    <li><strong>Four of a kind</strong> on top of the pile also burns it, and the player who completed it plays again.</li>
-                    <li>Cannot or do not want to play? Pick up the whole pile. The next player starts a new one.</li>
-                    <li>Once your hand and the deck are empty, play your face-up cards. If you have to pick up, one face-up card goes with the pile. Then flip your face-down cards blind; a bad flip means you pick up the pile.</li>
-                    <li>Whoever gets rid of everything first is safe. The last player left holding cards is the shithead.</li>
-                    <li>If the turn timer runs out, the game plays for you.</li>
-                </ul>
-            </details>
         </section>
 
         <section id="room" class="screen" hidden>
             <header id="room-header">
                 <div class="room-id">
+                    <span class="wordmark small">Pyre</span>
                     <span class="label">Room</span>
                     <strong id="room-code" class="code"></strong>
                     <span id="player-count" class="label"></span>
                 </div>
                 <div class="actions">
+                    <button id="theme-toggle" type="button" title="Switch theme" aria-label="Switch theme">◐</button>
                     <button id="sound-toggle" type="button" aria-pressed="true" title="Sound">🔔</button>
-                    <button id="copy-invite" type="button">Copy invite link</button>
+                    <button id="copy-invite" type="button">Invite link</button>
                     <button id="leave-room" type="button">Leave</button>
                 </div>
             </header>
@@ -113,6 +127,7 @@
                     <p id="status" role="status" aria-live="assertive"></p>
                     <div class="buttons">
                         <button id="start-game" class="primary" type="button" hidden>Deal cards</button>
+                        <button id="add-bot" type="button" hidden>Add a bot</button>
                         <button id="ready" class="primary" type="button" hidden>Ready</button>
                         <button id="begin-play" type="button" hidden>Start play now</button>
                         <button id="play-selected" class="primary" type="button" hidden>Play</button>
@@ -133,11 +148,27 @@
 
             <aside id="chat" aria-label="Chat">
                 <div id="messages" class="messages"></div>
+                <div id="reactions" class="reactions" aria-label="React"></div>
                 <form id="chat-form" autocomplete="off">
                     <input id="message-input" type="text" maxlength="300" placeholder="Say something…" aria-label="Chat message">
                     <button type="submit">Send</button>
                 </form>
             </aside>
+
+            <div id="overlay" class="overlay" hidden role="dialog" aria-modal="true" aria-labelledby="overlay-title">
+                <div class="overlay-card">
+                    <button id="overlay-close" class="close" type="button" aria-label="Close">×</button>
+                    <p class="eyebrow">Round over</p>
+                    <h2 id="overlay-title"></h2>
+                    <ol id="overlay-order" class="order"></ol>
+                    <dl id="overlay-stats" class="stats"></dl>
+                    <div class="buttons">
+                        <button id="overlay-again" class="primary" type="button" hidden>Play again</button>
+                        <button id="overlay-leave" type="button">Back to lobby</button>
+                    </div>
+                </div>
+                <div id="confetti" class="confetti" aria-hidden="true"></div>
+            </div>
         </section>
     </main>
 

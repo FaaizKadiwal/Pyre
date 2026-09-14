@@ -10,8 +10,9 @@ import pg from 'pg';
  *   - postgres: set DATABASE_URL; tables are created on first use
  *
  * A result:
- *   { roomId, playedAt (ISO string), durationSeconds, players: [{ name, place }] }
- * Place 1 finished first; the highest place is the loser.
+ *   { roomId, playedAt (ISO string), durationSeconds, playerCount, players: [{ name, place, bot }] }
+ * Place 1 finished first; place `playerCount` is the loser. Bots are stored
+ * so recent games read correctly, but never appear on the leaderboard.
  */
 
 const LEADERBOARD_LIMIT = 10;
@@ -44,8 +45,9 @@ function createMemoryResultStore() {
         async leaderboard(limit) {
             const stats = new Map();
             for (const game of games) {
-                const last = game.players.length;
-                for (const { name, place } of game.players) {
+                const last = game.playerCount ?? game.players.length;
+                for (const { name, place, bot } of game.players) {
+                    if (bot) continue;
                     const row = stats.get(name) ?? { name, games: 0, wins: 0, losses: 0 };
                     row.games += 1;
                     if (place === 1) row.wins += 1;
@@ -76,8 +78,11 @@ const SCHEMA = [
         game_id INTEGER NOT NULL REFERENCES games(id) ON DELETE CASCADE,
         name TEXT NOT NULL,
         place INTEGER NOT NULL,
+        is_bot BOOLEAN NOT NULL DEFAULT false,
         PRIMARY KEY (game_id, name)
     )`,
+    // Databases created before bots existed get the column added in place.
+    'ALTER TABLE game_players ADD COLUMN IF NOT EXISTS is_bot BOOLEAN NOT NULL DEFAULT false',
     'CREATE INDEX IF NOT EXISTS game_players_name_idx ON game_players (name)',
     'CREATE INDEX IF NOT EXISTS games_played_at_idx ON games (played_at)',
 ];
@@ -104,12 +109,12 @@ function createPostgresResultStore({ connectionString, pool } = {}) {
                 const { rows } = await client.query(
                     `INSERT INTO games (room_code, played_at, duration_seconds, player_count)
                      VALUES ($1, $2, $3, $4) RETURNING id`,
-                    [result.roomId, new Date(result.playedAt), result.durationSeconds, result.players.length],
+                    [result.roomId, new Date(result.playedAt), result.durationSeconds, result.playerCount ?? result.players.length],
                 );
                 for (const player of result.players) {
                     await client.query(
-                        'INSERT INTO game_players (game_id, name, place) VALUES ($1, $2, $3)',
-                        [rows[0].id, player.name, player.place],
+                        'INSERT INTO game_players (game_id, name, place, is_bot) VALUES ($1, $2, $3, $4)',
+                        [rows[0].id, player.name, player.place, Boolean(player.bot)],
                     );
                 }
                 await client.query('COMMIT');
@@ -130,6 +135,7 @@ function createPostgresResultStore({ connectionString, pool } = {}) {
                         SUM(CASE WHEN gp.place = g.player_count THEN 1 ELSE 0 END)::int AS losses
                  FROM game_players gp
                  JOIN games g ON g.id = gp.game_id
+                 WHERE gp.is_bot = false
                  GROUP BY gp.name
                  ORDER BY wins DESC, losses ASC, games ASC, gp.name ASC
                  LIMIT $1`,
@@ -141,14 +147,14 @@ function createPostgresResultStore({ connectionString, pool } = {}) {
         async recentGames(limit) {
             await ready;
             const { rows: games } = await db.query(
-                `SELECT id, room_code, played_at, duration_seconds
+                `SELECT id, room_code, played_at, duration_seconds, player_count
                  FROM games ORDER BY played_at DESC, id DESC LIMIT $1`,
                 [clampLimit(limit, RECENT_LIMIT)],
             );
             if (games.length === 0) return [];
             const placeholders = games.map((_, i) => `$${i + 1}`).join(', ');
             const { rows: players } = await db.query(
-                `SELECT game_id, name, place FROM game_players
+                `SELECT game_id, name, place, is_bot FROM game_players
                  WHERE game_id IN (${placeholders}) ORDER BY place ASC`,
                 games.map((g) => g.id),
             );
@@ -156,9 +162,10 @@ function createPostgresResultStore({ connectionString, pool } = {}) {
                 roomId: g.room_code,
                 playedAt: new Date(g.played_at).toISOString(),
                 durationSeconds: g.duration_seconds,
+                playerCount: g.player_count,
                 players: players
                     .filter((p) => p.game_id === g.id)
-                    .map(({ name, place }) => ({ name, place })),
+                    .map(({ name, place, is_bot: bot }) => ({ name, place, bot: Boolean(bot) })),
             }));
         },
 

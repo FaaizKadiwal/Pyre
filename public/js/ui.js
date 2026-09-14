@@ -19,9 +19,11 @@ export const els = {
     recentGames: $('recent-games'),
     roomCode: $('room-code'),
     playerCount: $('player-count'),
+    themeToggle: $('theme-toggle'),
     soundToggle: $('sound-toggle'),
     copyInviteButton: $('copy-invite'),
     leaveButton: $('leave-room'),
+    table: $('table'),
     opponents: $('opponents'),
     deck: $('deck'),
     pile: $('pile'),
@@ -33,6 +35,7 @@ export const els = {
     me: $('me'),
     status: $('status'),
     startButton: $('start-game'),
+    addBotButton: $('add-bot'),
     readyButton: $('ready'),
     beginButton: $('begin-play'),
     playButton: $('play-selected'),
@@ -42,11 +45,21 @@ export const els = {
     countdownTime: $('countdown').querySelector('.time'),
     log: $('log'),
     messages: $('messages'),
+    reactions: $('reactions'),
     chatForm: $('chat-form'),
     messageInput: $('message-input'),
+    overlay: $('overlay'),
+    overlayClose: $('overlay-close'),
+    overlayTitle: $('overlay-title'),
+    overlayOrder: $('overlay-order'),
+    overlayStats: $('overlay-stats'),
+    overlayAgain: $('overlay-again'),
+    overlayLeave: $('overlay-leave'),
+    confetti: $('confetti'),
 };
 
 const LOG_LIMIT = 40;
+const THEME_COLORS = { ember: '#120f0d', midnight: '#0b1020', felt: '#0f2e1d' };
 
 export function showScreen(name) {
     els.lobby.hidden = name !== 'lobby';
@@ -80,6 +93,12 @@ export function renderSoundToggle(enabled) {
     els.soundToggle.title = enabled ? 'Sound on' : 'Sound off';
 }
 
+export function applyTheme(name) {
+    document.documentElement.dataset.theme = name;
+    document.querySelector('meta[name="theme-color"]')?.setAttribute('content', THEME_COLORS[name] ?? THEME_COLORS.ember);
+    els.themeToggle.title = `Theme: ${name}. Click to switch.`;
+}
+
 export function addLog(text) {
     const item = document.createElement('li');
     item.textContent = text;
@@ -107,6 +126,8 @@ export function clearRoom() {
     els.pile.replaceChildren();
     els.pileInfo.textContent = '';
     els.countdown.hidden = true;
+    els.table.classList.remove('dealing');
+    hideSummary();
 }
 
 function cell(tag, text, className = '') {
@@ -124,6 +145,12 @@ function timeAgo(iso) {
     const hours = Math.round(minutes / 60);
     if (hours < 24) return `${hours} h ago`;
     return `${Math.round(hours / 24)} d ago`;
+}
+
+function duration(seconds) {
+    const m = Math.floor(seconds / 60);
+    const s = seconds % 60;
+    return m ? `${m} min ${s}s` : `${s}s`;
 }
 
 export function renderLeaderboard({ persistent, rows, recent = [] }) {
@@ -147,8 +174,9 @@ export function renderLeaderboard({ persistent, rows, recent = [] }) {
         els.recentGames.append(cell('li', 'Nothing yet. Finish a game to see it here.', 'empty'));
     }
     for (const game of recent) {
-        const first = game.players[0]?.name ?? 'Someone';
-        const last = game.players[game.players.length - 1]?.name ?? 'someone';
+        const label = (p) => (p ? `${p.name}${p.bot ? ' (bot)' : ''}` : 'Someone');
+        const first = label(game.players[0]);
+        const last = label(game.players[game.players.length - 1]);
         const others = game.players.length > 2 ? ` (${game.players.length} players)` : '';
         const li = document.createElement('li');
         li.append(cell('span', `${first} went out first, ${last} was the shithead${others}`), cell('span', timeAgo(game.playedAt), 'when'));
@@ -163,12 +191,14 @@ export function renderRoomList(rooms, onJoin) {
         return;
     }
     for (const room of rooms) {
+        const running = room.status === 'swapping' || room.status === 'playing';
         const li = document.createElement('li');
         const info = document.createElement('span');
         info.append(cell('span', room.id, 'code'), cell('span', ` · ${room.host}'s room · ${room.playerCount}/${room.maxPlayers}`, 'meta'));
+        if (running) info.append(cell('span', ' · in play', 'meta live'));
         const button = document.createElement('button');
         button.type = 'button';
-        button.textContent = 'Join';
+        button.textContent = running ? 'Watch' : 'Join';
         button.addEventListener('click', () => onJoin(room.id));
         li.append(info, button);
         els.roomList.append(li);
@@ -179,14 +209,22 @@ function badge(text, kind) {
     return cell('span', text, `badge ${kind}`);
 }
 
-function nameLine(player, { isMe, canKick, onKick, status }) {
+function avatar(player) {
+    const el = document.createElement('span');
+    el.className = `avatar c${player.color}`;
+    el.append(cell('span', player.isBot ? '🤖' : (player.name.trim()[0] ?? '?').toUpperCase()));
+    return el;
+}
+
+function nameLine(player, { isMe, canKick, onKick, status, running }) {
     const line = document.createElement('div');
     line.className = 'name';
-    const dot = document.createElement('span');
-    dot.className = `dot c${player.color}`;
-    line.append(dot, cell('span', isMe ? `${player.name} (you)` : player.name));
+    line.append(avatar(player), cell('span', isMe ? `${player.name} (you)` : player.name));
     if (player.isHost) line.append(badge('Host', 'host'));
+    if (player.isBot) line.append(badge('bot', 'bot'));
     if (player.wins > 0) line.append(badge(`🏆 ${player.wins}`, 'wins'));
+    if (player.losses > 0) line.append(badge(`💩 ${player.losses}`, 'losses'));
+    if (running && !player.inGame) line.append(badge('Watching', 'watching'));
     if (status === 'swapping' && player.inGame) line.append(badge(player.ready ? 'Ready' : 'Swapping…', player.ready ? 'ready' : 'waiting'));
     if (player.finished) line.append(badge('Out', 'out'));
     else if (status === 'playing' && player.inGame && player.cardsLeft === 1) line.append(badge('Last card!', 'last'));
@@ -221,7 +259,7 @@ function tableCards(player, { canFlip = false, onFlip, faceUpOptions = null } = 
         const slotEl = document.createElement('div');
         slotEl.className = 'table-slot';
         if (i < player.faceDownCount) {
-            slotEl.append(cardBack(canFlip ? { onSelect: () => onFlip(i), label: `Flip face-down card ${i + 1}` } : {}));
+            slotEl.append(cardBack(canFlip ? { onSelect: () => onFlip(i), label: `Flip face-down card ${i + 1}`, index: i } : { index: i }));
         }
         const up = player.faceUp[i];
         if (up) {
@@ -231,8 +269,9 @@ function tableCards(player, { canFlip = false, onFlip, faceUpOptions = null } = 
                     playable: faceUpOptions.isPlayable(up),
                     selected: faceUpOptions.isSelected(up),
                     enabled: faceUpOptions.isEnabled(up),
+                    index: 3 + i,
                 })
-                : cardElement(up));
+                : cardElement(up, { index: 3 + i }));
         }
         wrap.append(slotEl);
     }
@@ -240,9 +279,11 @@ function tableCards(player, { canFlip = false, onFlip, faceUpOptions = null } = 
 }
 
 function opponentPanel(player, state, actions, canKick) {
+    const running = state.status === 'swapping' || state.status === 'playing';
     const panel = document.createElement('div');
     panel.className = playerClasses(player);
-    panel.append(nameLine(player, { isMe: false, canKick, onKick: actions.kick, status: state.status }));
+    panel.dataset.playerId = player.id;
+    panel.append(nameLine(player, { isMe: false, canKick, onKick: actions.kick, status: state.status, running }));
     if (!player.inGame) return panel;
 
     const row = document.createElement('div');
@@ -264,9 +305,11 @@ function opponentPanel(player, state, actions, canKick) {
  * { selected: Card[], swapPick: { from, card } | null, sacrifice: Card | null }.
  */
 function myPanel(me, state, actions, choice) {
+    const running = state.status === 'swapping' || state.status === 'playing';
     const panel = document.createElement('div');
     panel.className = `${playerClasses(me)} me`;
-    panel.append(nameLine(me, { isMe: true, canKick: false, status: state.status }));
+    panel.dataset.playerId = me.id;
+    panel.append(nameLine(me, { isMe: true, canKick: false, status: state.status, running }));
     if (!me.inGame) return panel;
 
     const swapping = state.status === 'swapping' && !me.ready;
@@ -306,23 +349,26 @@ function myPanel(me, state, actions, choice) {
     const hand = document.createElement('div');
     hand.className = 'hand';
     hand.setAttribute('aria-label', 'Your hand');
-    for (const card of sortCards(state.hand)) {
+    sortCards(state.hand).forEach((card, i) => {
+        const index = 6 + i;
         if (swapping) {
             hand.append(cardElement(card, {
                 onSelect: (c) => actions.swapPick(c, 'hand'),
                 selected: cardKey(card) === pickedKey,
                 enabled: true,
+                index,
             }));
         } else if (active && state.source === 'hand') {
             hand.append(cardElement(card, {
                 onSelect: actions.select,
                 playable: legalKeys.has(cardKey(card)),
                 selected: selectedKeys.has(cardKey(card)),
+                index,
             }));
         } else {
-            hand.append(cardElement(card));
+            hand.append(cardElement(card, { index }));
         }
-    }
+    });
     panel.append(hand);
     return panel;
 }
@@ -343,6 +389,7 @@ function renderButtons(state, me, choice) {
     els.startButton.hidden = !(isHost && between);
     els.startButton.disabled = state.players.length < state.minPlayers;
     els.startButton.textContent = state.status === 'finished' ? 'Play again' : 'Deal cards';
+    els.addBotButton.hidden = !(isHost && between && state.players.length < state.maxPlayers);
 
     const swapping = state.status === 'swapping';
     els.readyButton.hidden = !(swapping && me?.inGame && !me.ready);
@@ -359,6 +406,18 @@ function renderButtons(state, me, choice) {
         : 'Pick up pile';
 }
 
+function renderReactions(emojis, onReact) {
+    if (els.reactions.childElementCount) return;
+    for (const emoji of emojis) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.textContent = emoji;
+        button.title = `React with ${emoji}`;
+        button.addEventListener('click', () => onReact(emoji));
+        els.reactions.append(button);
+    }
+}
+
 const RUN_WORDS = { 2: 'two', 3: 'three' };
 
 export function renderRoom(state, actions, choice) {
@@ -373,7 +432,10 @@ export function renderRoom(state, actions, choice) {
     els.deck.replaceChildren(state.deckCount ? cardBack({ label: `${state.deckCount} cards in deck` }) : slot('Deck is empty'));
     if (state.deckCount) els.deck.append(countBadge(state.deckCount));
 
-    els.pile.replaceChildren(state.pile.top ? cardElement(state.pile.top) : slot('Pile is empty'));
+    const previousTop = els.pile.querySelector('.card')?.dataset.key ?? null;
+    const topEl = state.pile.top ? cardElement(state.pile.top) : slot('Pile is empty');
+    if (state.pile.top && cardKey(state.pile.top) !== previousTop) topEl.classList.add('fresh');
+    els.pile.replaceChildren(topEl);
     if (state.pile.count) els.pile.append(countBadge(state.pile.count));
     els.pileInfo.textContent = state.pile.topRun >= 2
         ? `${RUN_WORDS[state.pile.topRun] ?? state.pile.topRun} ${state.pile.top.value}s on top`
@@ -381,6 +443,7 @@ export function renderRoom(state, actions, choice) {
 
     renderSettings(state, me);
     renderButtons(state, me, choice);
+    renderReactions(state.reactions ?? [], actions.react);
 }
 
 /** `info` is `{ remainingMs, totalMs, mine }`, or null to hide the bar. */
@@ -395,4 +458,103 @@ export function renderCountdown(info) {
     els.countdown.classList.toggle('warn', remainingMs <= 10_000);
     els.countdownFill.style.width = `${Math.max(0, Math.min(100, (remainingMs / totalMs) * 100))}%`;
     els.countdownTime.textContent = `${Math.ceil(remainingMs / 1000)}s`;
+}
+
+// ----- Effects -----
+
+/** Stagger the cards in after a deal. */
+export function dealEffect() {
+    els.table.classList.remove('dealing');
+    void els.table.offsetWidth; // restart the animation
+    els.table.classList.add('dealing');
+    setTimeout(() => els.table.classList.remove('dealing'), 1200);
+}
+
+/** Flash the pile and scatter embers. */
+export function burnEffect() {
+    els.pile.classList.remove('burning');
+    void els.pile.offsetWidth;
+    els.pile.classList.add('burning');
+    for (let i = 0; i < 14; i++) {
+        const ember = document.createElement('span');
+        ember.className = 'ember';
+        const angle = Math.random() * Math.PI * 2;
+        const distance = 40 + Math.random() * 70;
+        ember.style.setProperty('--dx', `${Math.cos(angle) * distance}px`);
+        ember.style.setProperty('--dy', `${Math.sin(angle) * distance - 30}px`);
+        ember.style.setProperty('--delay', `${Math.random() * 120}ms`);
+        els.pile.append(ember);
+        setTimeout(() => ember.remove(), 1100);
+    }
+    setTimeout(() => els.pile.classList.remove('burning'), 800);
+}
+
+/** Float an emoji up from a player's seat. */
+export function showReaction(playerId, emoji) {
+    const panel = els.room.querySelector(`.player[data-player-id="${CSS.escape(playerId)}"]`);
+    if (!panel) return;
+    const el = document.createElement('span');
+    el.className = 'reaction-float';
+    el.textContent = emoji;
+    panel.append(el);
+    setTimeout(() => el.remove(), 1700);
+}
+
+// ----- Round summary -----
+
+const MEDALS = ['🥇', '🥈', '🥉', '4️⃣'];
+
+/**
+ * The end-of-round card: finishing order, the shithead, a few numbers, and
+ * confetti for everyone but the loser.
+ */
+export function showSummary(state, { isHost, iLost }) {
+    const nameOf = (id) => state.players.find((p) => p.id === id)?.name ?? 'Someone';
+    const order = [...state.finished, state.loser].filter(Boolean);
+    els.overlayTitle.textContent = state.endReason === 'completed'
+        ? `${nameOf(state.loser)} is the shithead`
+        : 'Round ended early';
+
+    els.overlayOrder.replaceChildren();
+    order.forEach((id, i) => {
+        const li = document.createElement('li');
+        const last = i === order.length - 1 && state.endReason === 'completed';
+        li.append(
+            cell('span', last ? '💩' : (MEDALS[i] ?? '·'), 'medal'),
+            cell('span', nameOf(id), 'who'),
+            cell('span', last ? 'last one holding cards' : i === 0 ? 'went out first' : 'safe', 'detail'),
+        );
+        els.overlayOrder.append(li);
+    });
+
+    els.overlayStats.replaceChildren();
+    const stat = (label, value) => {
+        const wrap = document.createElement('div');
+        wrap.append(cell('dt', label), cell('dd', value));
+        els.overlayStats.append(wrap);
+    };
+    const stats = state.stats ?? { burns: 0, biggestPickup: null };
+    stat('Burns', String(stats.burns));
+    stat('Biggest pick-up', stats.biggestPickup ? `${stats.biggestPickup.count} by ${nameOf(stats.biggestPickup.id)}` : 'none');
+    stat('Length', duration(state.durationSeconds ?? 0));
+    stat('Players', String(state.players.filter((p) => p.inGame).length || order.length));
+
+    els.overlayAgain.hidden = !isHost;
+    els.confetti.replaceChildren();
+    if (state.endReason === 'completed' && !iLost) {
+        for (let i = 0; i < 48; i++) {
+            const piece = document.createElement('span');
+            piece.style.setProperty('--x', `${Math.random() * 100}%`);
+            piece.style.setProperty('--delay', `${Math.random() * 1.2}s`);
+            piece.style.setProperty('--hue', String(Math.floor(Math.random() * 360)));
+            els.confetti.append(piece);
+        }
+    }
+    els.overlay.hidden = false;
+    els.overlayClose.focus();
+}
+
+export function hideSummary() {
+    els.overlay.hidden = true;
+    els.confetti.replaceChildren();
 }

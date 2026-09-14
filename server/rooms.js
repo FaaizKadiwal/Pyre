@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import * as logic from './gameLogic.js';
+import { BOT_NAMES } from './bots.js';
 import { createMemoryResultStore } from './results.js';
 
 // Unambiguous alphabet: no 0/O or 1/I.
@@ -11,14 +12,18 @@ const MAX_ROOMS = 500;
 const TURN_SECONDS_MAX = 300;
 const COLOR_COUNT = 8;
 const DEFAULT_SETTINGS = { turnSeconds: 60, private: false };
+/** The emoji a player may send as a reaction. */
+const REACTIONS = ['👏', '😂', '😱', '🔥', '😈', '💩', '👋', '🤔'];
 
 /**
  * All server state lives here. `results` persists finished games (memory or
- * Postgres), `random` is injectable so tests can deal deterministically, and
- * the rate limits are read once per connection.
+ * Postgres), `random` is injectable so tests can deal deterministically, the
+ * rate limits are read once per connection, and the bot delays are shortened
+ * by the tests.
  *
  * Players have a stable `id` (sockets change on reconnect) and a secret
- * `token` that lets a new connection reclaim the same seat.
+ * `token` that lets a new connection reclaim the same seat. Bots are seats
+ * with no socket and no token.
  */
 function createStore({ results = createMemoryResultStore(), random = Math.random, maxRooms = MAX_ROOMS } = {}) {
     return {
@@ -29,6 +34,7 @@ function createStore({ results = createMemoryResultStore(), random = Math.random
         random,
         maxRooms,
         rateLimit: { windowMs: 5_000, actions: 30, chat: 5 },
+        botDelay: { swapMs: 700, moveMs: 900 },
     };
 }
 
@@ -60,6 +66,10 @@ function cleanMessage(raw) {
         : '';
 }
 
+function cleanReaction(raw) {
+    return REACTIONS.includes(raw) ? raw : null;
+}
+
 /** Two "Sam"s in one room become "Sam" and "Sam 2" so results and chat stay unambiguous. */
 function uniqueName(room, name) {
     const taken = new Set(room.players.map((p) => p.name.toLowerCase()));
@@ -88,7 +98,12 @@ function newPlayer(socketId, name, isHost, color) {
         isHost,
         connected: true,
         color,
+        isBot: false,
     };
+}
+
+function newBot(name, color) {
+    return { id: crypto.randomUUID(), socketId: null, token: null, name, isHost: false, connected: true, color, isBot: true };
 }
 
 function safeEqual(a, b) {
@@ -106,14 +121,14 @@ function roomStatus(room) {
     return room.game ? room.game.status : 'waiting';
 }
 
-function isJoinable(room) {
-    const status = roomStatus(room);
-    return room.players.length < logic.MAX_PLAYERS && (status === 'waiting' || status === 'finished');
-}
-
 function isRunning(room) {
     const status = roomStatus(room);
     return status === 'swapping' || status === 'playing';
+}
+
+/** Anyone may take a free seat; during a game they watch and play the next round. */
+function isJoinable(room) {
+    return room.players.length < logic.MAX_PLAYERS;
 }
 
 /** Resolve a socket to its room and player, or null when the socket holds no seat. */
@@ -142,8 +157,10 @@ function createRoom(store, socketId, name) {
         startedAt: null,
         settings: { ...DEFAULT_SETTINGS },
         scores: {},                          // playerId -> games won in this room
+        losses: {},                          // playerId -> times the shithead in this room
         dealer: null,                         // seat index of the last dealer
         turn: { endsAt: null, handle: null }, // turn timer, managed by gameService
+        bot: { handle: null },                // bot think timer, managed by gameService
     };
     store.rooms.set(room.id, room);
     bind(store, socketId, room, player);
@@ -153,13 +170,22 @@ function createRoom(store, socketId, name) {
 function joinRoom(store, socketId, roomId, name) {
     const room = store.rooms.get(roomId);
     if (!room) return { error: 'Room not found' };
-    if (room.players.length >= logic.MAX_PLAYERS) return { error: 'Room is full' };
-    if (isRunning(room)) return { error: 'Game already in progress' };
+    if (!isJoinable(room)) return { error: 'Room is full' };
 
     const player = newPlayer(socketId, uniqueName(room, name), false, nextColor(room));
     room.players.push(player);
     bind(store, socketId, room, player);
-    return { ok: true, room, player };
+    return { ok: true, room, player, spectating: isRunning(room) };
+}
+
+function addBot(room, host) {
+    if (!host.isHost) return { error: 'Only the host can add bots' };
+    if (isRunning(room)) return { error: 'Bots can only be added between games' };
+    if (!isJoinable(room)) return { error: 'Room is full' };
+    const name = BOT_NAMES.find((n) => !room.players.some((p) => p.name === n)) ?? uniqueName(room, 'Bot');
+    const bot = newBot(name, nextColor(room));
+    room.players.push(bot);
+    return { ok: true, player: bot };
 }
 
 /**
@@ -169,7 +195,7 @@ function joinRoom(store, socketId, roomId, name) {
 function resumeSession(store, socketId, roomId, token) {
     const room = store.rooms.get(roomId);
     if (!room) return { error: 'That room no longer exists' };
-    const player = room.players.find((p) => safeEqual(p.token, token));
+    const player = room.players.find((p) => !p.isBot && safeEqual(p.token, token));
     if (!player) return { error: 'No seat matches that session' };
 
     const previousSocketId = player.socketId;
@@ -182,27 +208,27 @@ function resumeSession(store, socketId, roomId, token) {
 }
 
 /**
- * Remove the player seated at a socket. Returns what changed so the caller can
- * announce it: `{ room, player, deleted, newHost, gameEnded }` or null if unknown.
+ * Remove a player (human or bot) from a room. Returns what changed so the
+ * caller can announce it: `{ room, player, deleted, newHost, gameEnded }`.
+ * A room with no humans left is deleted, bots and all.
  */
-function removePlayer(store, socketId) {
-    const found = lookup(store, socketId);
-    store.players.delete(socketId);
-    if (!found) return null;
-
-    const { room, player } = found;
+function removeById(store, room, playerId) {
+    const player = playerById(room, playerId);
+    if (!player) return null;
+    if (player.socketId) store.players.delete(player.socketId);
     room.players = room.players.filter((p) => p.id !== player.id);
     delete room.scores[player.id];
+    delete room.losses[player.id];
 
-    if (room.players.length === 0) {
+    if (!room.players.some((p) => !p.isBot)) {
         store.rooms.delete(room.id);
         return { room, player, deleted: true, newHost: null, gameEnded: false };
     }
 
     let newHost = null;
     if (!room.players.some((p) => p.isHost)) {
-        room.players[0].isHost = true;
-        newHost = room.players[0];
+        newHost = room.players.find((p) => !p.isBot);
+        newHost.isHost = true;
     }
 
     let gameEnded = false;
@@ -211,6 +237,13 @@ function removePlayer(store, socketId) {
         gameEnded = room.game.status === 'finished';
     }
     return { room, player, deleted: false, newHost, gameEnded };
+}
+
+/** Remove the player seated at a socket. */
+function removePlayer(store, socketId) {
+    const found = lookup(store, socketId);
+    store.players.delete(socketId);
+    return found ? removeById(store, found.room, found.player.id) : null;
 }
 
 function updateSettings(room, player, patch) {
@@ -256,7 +289,11 @@ function buildResult(room, now = Date.now()) {
         roomId: room.id,
         playedAt: new Date(now).toISOString(),
         durationSeconds: Math.max(0, Math.round((now - (room.startedAt ?? now)) / 1000)),
-        players: order.map((id, i) => ({ name: playerById(room, id)?.name ?? 'Unknown', place: i + 1 })),
+        playerCount: order.length,
+        players: order.map((id, i) => {
+            const p = playerById(room, id);
+            return { name: p?.name ?? 'Unknown', place: i + 1, bot: Boolean(p?.isBot) };
+        }),
     };
 }
 
@@ -295,6 +332,7 @@ function buildView(room, viewer) {
         maxPlayers: logic.MAX_PLAYERS,
         minPlayers: logic.MIN_PLAYERS,
         settings: room.settings,
+        reactions: REACTIONS,
         me: viewer.id,
         players: room.players.map((p) => {
             const c = game?.cards[p.id];
@@ -303,8 +341,10 @@ function buildView(room, viewer) {
                 name: p.name,
                 color: p.color,
                 isHost: p.isHost,
+                isBot: p.isBot,
                 connected: p.connected,
                 wins: room.scores[p.id] ?? 0,
+                losses: room.losses[p.id] ?? 0,
                 inGame: Boolean(c),
                 handCount: c ? c.hand.length : 0,
                 faceUp: c ? c.faceUp : [],
@@ -333,6 +373,8 @@ function buildView(room, viewer) {
         finished: game ? game.finished : [],
         loser: game ? game.loser : null,
         endReason: game ? game.endReason : null,
+        stats: game ? game.stats : null,
+        durationSeconds: game && room.startedAt ? Math.round((Date.now() - room.startedAt) / 1000) : 0,
     };
 }
 
@@ -341,17 +383,21 @@ export {
     MESSAGE_MAX,
     MAX_ROOMS,
     TURN_SECONDS_MAX,
+    REACTIONS,
     createStore,
     normaliseRoomId,
     cleanName,
     cleanMessage,
+    cleanReaction,
     uniqueName,
     lookup,
     playerById,
     isRunning,
     createRoom,
     joinRoom,
+    addBot,
     resumeSession,
+    removeById,
     removePlayer,
     updateSettings,
     startGame,

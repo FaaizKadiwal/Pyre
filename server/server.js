@@ -27,8 +27,9 @@ app.use(helmet({
         directives: {
             // Same origin only, plus our own WebSocket endpoint: older browsers do not treat ws: as 'self'.
             'connect-src': ["'self'", (req) => `ws://${req.headers.host} wss://${req.headers.host}`],
-            // All styling is in style.css; the client only sets element.style through the CSSOM.
-            'style-src': ["'self'"],
+            // Styling is in style.css plus the two Google Fonts faces; the client only sets element.style through the CSSOM.
+            'style-src': ["'self'", 'https://fonts.googleapis.com'],
+            'font-src': ["'self'", 'https://fonts.gstatic.com', 'data:'],
             // Would break plain-HTTP play on a LAN; hosted deployments are HTTPS end to end anyway.
             'upgrade-insecure-requests': null,
         },

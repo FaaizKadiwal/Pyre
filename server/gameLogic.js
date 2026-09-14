@@ -15,6 +15,7 @@
  *     finished: string[]    ids in the order they got rid of all their cards
  *     loser:    string|null the shithead, set when the game completes
  *     endReason:'completed' | 'abandoned' | null
+ *     stats:    { burns, pickups: { [id]: cards }, biggestPickup: { id, count } | null }
  *   }
  *
  * Every mutating function validates the move and returns either
@@ -151,7 +152,15 @@ function createGame(playerIds, random = Math.random) {
         finished: [],
         loser: null,
         endReason: null,
+        stats: { burns: 0, pickups: {}, biggestPickup: null },
     };
+}
+
+function recordPickup(game, id, count) {
+    game.stats.pickups[id] = (game.stats.pickups[id] ?? 0) + count;
+    if (!game.stats.biggestPickup || count > game.stats.biggestPickup.count) {
+        game.stats.biggestPickup = { id, count };
+    }
 }
 
 // ----- Before play: swapping -----
@@ -282,7 +291,10 @@ function settleAfterPlay(game, id, played) {
     let burn = null;
     if (played[0].value === '10') burn = 'ten';
     else if (topRun(game.pile) >= 4) burn = 'four';
-    if (burn) game.pile = [];
+    if (burn) {
+        game.pile = [];
+        game.stats.burns += 1;
+    }
 
     refillHand(game, id);
 
@@ -349,6 +361,7 @@ function playFaceDown(game, id, index) {
     const pickedUp = game.pile.length + 1;
     game.cards[id].hand.push(...game.pile, card);
     game.pile = [];
+    recordPickup(game, id, pickedUp);
     advanceTurn(game);
     return { ok: true, card, source: 'faceDown', success: false, pickedUp, gameOver: false };
 }
@@ -377,6 +390,7 @@ function pickUpPile(game, id, faceUpCard = null) {
     c.hand.push(...game.pile);
     if (added) c.hand.push(added);
     game.pile = [];
+    recordPickup(game, id, count);
     advanceTurn(game);
     return { ok: true, count, added };
 }

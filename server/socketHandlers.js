@@ -94,6 +94,10 @@ export default function registerHandlers(io, socket, store, service) {
 
     on('kick-player', ({ playerId }) => seated((room, player) => service.kick(room, player, playerId)));
 
+    on('add-bot', () => seated((room, player) => service.addBot(room, player)));
+
+    on('react', ({ emoji }) => seated((room, player) => service.react(room, player, emoji)), allowChat);
+
     on('swap-cards', ({ handCard, faceUpCard }) => seated((room, player) => service.swap(room, player, handCard, faceUpCard)));
 
     on('ready', () => seated((room, player) => service.ready(room, player)));

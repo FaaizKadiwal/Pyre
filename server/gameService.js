@@ -1,5 +1,6 @@
 import * as logic from './gameLogic.js';
 import * as rooms from './rooms.js';
+import * as bots from './bots.js';
 
 /** How long a disconnected player keeps their seat before being removed. */
 const DISCONNECT_GRACE_MS = 60_000;
@@ -18,12 +19,13 @@ const describeTimer = (seconds) => (seconds ? `${seconds} seconds per turn` : 'n
 /**
  * Everything that changes a room and tells its players about it.
  *
- * Socket handlers only parse requests and call in here. The turn timer and
- * the disconnect grace timer call in here too, which is why this lives
- * outside any single socket. Every method returns `{ ok: true }` or `{ error }`.
+ * Socket handlers only parse requests and call in here. The turn timer, the
+ * disconnect grace timer and the bots call in here too, which is why this
+ * lives outside any single socket. Every method returns `{ ok: true, ... }`
+ * or `{ error }`.
  *
- * Fan-out is deliberate: `room-state` goes to the players of one room, while
- * `room-list` and `leaderboard` go only to sockets in the lobby.
+ * Fan-out is deliberate: `room-state` goes to the human players of one room,
+ * while `room-list` and `leaderboard` go only to sockets in the lobby.
  */
 function createGameService(io, store) {
     let leaderboardCache = null;
@@ -57,12 +59,19 @@ function createGameService(io, store) {
 
     const broadcastRoom = (room) => {
         for (const player of room.players) {
-            io.to(player.socketId).emit('room-state', rooms.buildView(room, player));
+            if (player.socketId) io.to(player.socketId).emit('room-state', rooms.buildView(room, player));
         }
     };
 
     const announce = (room, type, message, extra = {}) => {
         io.to(room.id).emit('game-event', { type, message, at: Date.now(), ...extra });
+    };
+
+    const react = (room, player, emoji) => {
+        const clean = rooms.cleanReaction(emoji);
+        if (!clean) return { error: 'That reaction is not available' };
+        io.to(room.id).emit('reaction', { playerId: player.id, emoji: clean, at: Date.now() });
+        return { ok: true };
     };
 
     const recordResult = (room) => {
@@ -77,11 +86,16 @@ function createGameService(io, store) {
     const nameOf = (room, id) => rooms.playerById(room, id)?.name ?? 'A player';
     const firstPlayerName = (room) => nameOf(room, logic.currentPlayerId(room.game));
 
-    // ----- Timers: the swap phase and each turn -----
+    // ----- Timers: the swap phase, each turn, and the bots -----
 
     const clearTurnTimer = (room) => {
         if (room.turn.handle) clearTimeout(room.turn.handle);
         room.turn = { endsAt: null, handle: null };
+    };
+
+    const clearBotTimer = (room) => {
+        if (room.bot.handle) clearTimeout(room.bot.handle);
+        room.bot.handle = null;
     };
 
     const arm = (room, seconds, fn) => {
@@ -108,6 +122,50 @@ function createGameService(io, store) {
         clearTurnTimer(room);
         if (room.settings.turnSeconds > 0) arm(room, room.settings.turnSeconds, autoMove);
     };
+
+    /** Give the bots a moment to "think", then let them swap, press Ready or move. */
+    const scheduleBots = (room) => {
+        clearBotTimer(room);
+        const game = room.game;
+        if (!game || game.status === 'finished') return;
+        let delay = null;
+        if (game.status === 'swapping' && room.players.some((p) => p.isBot && game.cards[p.id] && !game.ready.includes(p.id))) {
+            delay = store.botDelay.swapMs;
+        } else if (game.status === 'playing' && rooms.playerById(room, logic.currentPlayerId(game))?.isBot) {
+            delay = store.botDelay.moveMs;
+        }
+        if (delay === null) return;
+        room.bot.handle = setTimeout(() => botAct(room), delay);
+        room.bot.handle.unref?.();
+    };
+
+    function botAct(room) {
+        room.bot.handle = null;
+        const game = room.game;
+        if (!game) return;
+        if (game.status === 'swapping') {
+            for (const bot of room.players.filter((p) => p.isBot && game.cards[p.id] && !game.ready.includes(p.id))) {
+                for (const [handCard, faceUpCard] of bots.planSwaps(game.cards[bot.id])) {
+                    logic.swapCards(game, bot.id, handCard, faceUpCard);
+                }
+                const result = logic.setReady(game, bot.id);
+                announce(room, 'ready', `${bot.name} is ready.`);
+                if (result.started) announce(room, 'started', `Everyone is ready. ${firstPlayerName(room)} goes first.`);
+            }
+            settle(room);
+            return;
+        }
+        if (game.status !== 'playing') return;
+        const bot = rooms.playerById(room, logic.currentPlayerId(game));
+        if (!bot?.isBot) return;
+        const move = bots.chooseMove(game, bot.id, store.random);
+        let result;
+        if (move.type === 'play') result = play(room, bot, move.cards);
+        else if (move.type === 'pickUp') result = pickUp(room, bot, null);
+        else result = playFaceDown(room, bot, move.index);
+        const emoji = result.error ? null : bots.reactionFor(result);
+        if (emoji) react(room, bot, emoji);
+    }
 
     /** Swap time is up: play begins with whatever everyone has. */
     function autoBegin(room) {
@@ -145,9 +203,11 @@ function createGameService(io, store) {
         if (!game || game.status !== 'finished' || game.settled) return false;
         game.settled = true;
         clearTurnTimer(room);
+        clearBotTimer(room);
         if (game.endReason === 'completed') {
             const winner = game.finished[0];
             room.scores[winner] = (room.scores[winner] ?? 0) + 1;
+            room.losses[game.loser] = (room.losses[game.loser] ?? 0) + 1;
             announce(room, 'game-over', `Game over: ${nameOf(room, game.loser)} is the shithead. ${nameOf(room, winner)} went out first.`);
             recordResult(room);
         } else {
@@ -159,6 +219,7 @@ function createGameService(io, store) {
     const settle = (room) => {
         const ended = finishIfOver(room);
         scheduleTurn(room);
+        scheduleBots(room);
         broadcastRoom(room);
         if (ended) broadcastRoomList(); // the room is joinable again
     };
@@ -175,13 +236,13 @@ function createGameService(io, store) {
         if (result.error) return result;
         const labels = cardLabels(result.cards);
         if (result.burn) {
-            announce(room, 'burn', `${actor(player, auto)} played ${labels}, ${burnMessage(result.burn)} and plays again.`, { cards: result.cards, auto });
+            announce(room, 'burn', `${actor(player, auto)} played ${labels}, ${burnMessage(result.burn)} and plays again.`, { cards: result.cards, auto, playerId: player.id });
         } else {
-            announce(room, 'play', `${actor(player, auto)} played ${labels}.`, { cards: result.cards, auto });
+            announce(room, 'play', `${actor(player, auto)} played ${labels}.`, { cards: result.cards, auto, playerId: player.id });
         }
-        if (result.finished) announce(room, 'finished', `${player.name} is out of cards!`);
+        if (result.finished) announce(room, 'finished', `${player.name} is out of cards!`, { playerId: player.id });
         settle(room);
-        return { ok: true };
+        return { ok: true, ...result };
     };
 
     const playFaceDown = (room, player, index, { auto = false } = {}) => {
@@ -190,15 +251,15 @@ function createGameService(io, store) {
         if (result.error) return result;
         const label = cardLabel(result.card);
         if (!result.success) {
-            announce(room, 'pick-up', `${actor(player, auto)} flipped ${label}, which does not beat the pile, and picked up ${result.pickedUp} cards.`, { card: result.card, auto });
+            announce(room, 'pick-up', `${actor(player, auto)} flipped ${label}, which does not beat the pile, and picked up ${result.pickedUp} cards.`, { card: result.card, auto, playerId: player.id });
         } else if (result.burn) {
-            announce(room, 'burn', `${actor(player, auto)} flipped ${label}, ${burnMessage(result.burn)} and plays again.`, { card: result.card, auto });
+            announce(room, 'burn', `${actor(player, auto)} flipped ${label}, ${burnMessage(result.burn)} and plays again.`, { card: result.card, auto, playerId: player.id });
         } else {
-            announce(room, 'play', `${actor(player, auto)} flipped ${label}.`, { card: result.card, auto });
+            announce(room, 'play', `${actor(player, auto)} flipped ${label}.`, { card: result.card, auto, playerId: player.id });
         }
-        if (result.finished) announce(room, 'finished', `${player.name} is out of cards!`);
+        if (result.finished) announce(room, 'finished', `${player.name} is out of cards!`, { playerId: player.id });
         settle(room);
-        return { ok: true };
+        return { ok: true, ...result };
     };
 
     const pickUp = (room, player, faceUpCard, { auto = false } = {}) => {
@@ -206,9 +267,9 @@ function createGameService(io, store) {
         const result = logic.pickUpPile(room.game, player.id, faceUpCard);
         if (result.error) return result;
         const extra = result.added ? ` (adding ${cardLabel(result.added)} from the table)` : '';
-        announce(room, 'pick-up', `${actor(player, auto)} picked up ${result.count} cards${extra}.`, { auto });
+        announce(room, 'pick-up', `${actor(player, auto)} picked up ${result.count} cards${extra}.`, { auto, playerId: player.id });
         settle(room);
-        return { ok: true };
+        return { ok: true, ...result };
     };
 
     // ----- Before play: swapping -----
@@ -258,10 +319,21 @@ function createGameService(io, store) {
         if (result.error) return result;
         socket.leave(LOBBY);
         socket.join(result.room.id);
-        announce(result.room, 'joined', `${result.player.name} joined.`);
+        announce(result.room, 'joined', result.spectating
+            ? `${result.player.name} is watching and will play the next round.`
+            : `${result.player.name} joined.`);
         broadcastRoom(result.room);
         broadcastRoomList();
         return result;
+    };
+
+    const addBot = (room, host) => {
+        const result = rooms.addBot(room, host);
+        if (result.error) return result;
+        announce(room, 'joined', `${result.player.name} (bot) took a seat.`);
+        broadcastRoom(room);
+        broadcastRoomList();
+        return { ok: true };
     };
 
     const startGame = (room, player) => {
@@ -270,8 +342,9 @@ function createGameService(io, store) {
         clearTurnTimer(room);
         announce(room, 'dealt', 'Cards dealt. Swap any hand cards with your face-up cards, then press Ready.');
         scheduleTurn(room);
+        scheduleBots(room);
         broadcastRoom(room);
-        broadcastRoomList(); // no longer joinable
+        broadcastRoomList(); // the seat count and status changed
         return { ok: true };
     };
 
@@ -304,23 +377,31 @@ function createGameService(io, store) {
         store.pendingRemovals.delete(socketId);
     };
 
-    /** Remove whoever holds `socketId`: they left, timed out, or were removed by the host. */
-    const removeSeat = (socketId, reason) => {
-        cancelRemoval(socketId);
-        const change = rooms.removePlayer(store, socketId);
+    /** Announce and follow up on a removal computed by rooms.removeById/removePlayer. */
+    const applyRemoval = (change, reason) => {
         if (!change) return null;
         const { room, player, deleted, newHost, gameEnded } = change;
         if (deleted) {
             clearTurnTimer(room);
+            clearBotTimer(room);
         } else {
             announce(room, 'left', `${player.name} ${reason}.`);
             if (newHost) announce(room, 'host', `${newHost.name} is now the host.`);
             if (gameEnded) finishIfOver(room);
-            else if (room.game && room.game.status !== 'finished') scheduleTurn(room);
+            else if (room.game && room.game.status !== 'finished') {
+                scheduleTurn(room);
+                scheduleBots(room);
+            }
             broadcastRoom(room);
         }
         broadcastRoomList();
         return change;
+    };
+
+    /** Remove whoever holds `socketId`: they left, timed out, or were removed by the host. */
+    const removeSeat = (socketId, reason) => {
+        cancelRemoval(socketId);
+        return applyRemoval(rooms.removePlayer(store, socketId), reason);
     };
 
     const leave = (socket) => {
@@ -337,6 +418,10 @@ function createGameService(io, store) {
         const target = rooms.playerById(room, targetId);
         if (!target) return { error: 'That player is not in this room' };
         if (target.id === host.id) return { error: 'Use Leave to leave the room yourself' };
+        if (target.isBot) {
+            applyRemoval(rooms.removeById(store, room, target.id), `was removed by ${host.name}`);
+            return { ok: true };
+        }
         const targetSocket = io.sockets.sockets.get(target.socketId);
         const notice = { reason: `${host.name} removed you from the room` };
         if (targetSocket) {
@@ -404,6 +489,7 @@ function createGameService(io, store) {
         enterLobby,
         createRoom,
         joinRoom,
+        addBot,
         reclaimSeat,
         recoverSeat,
         leave,
@@ -418,6 +504,7 @@ function createGameService(io, store) {
         playFaceDown,
         pickUp,
         chat,
+        react,
         autoMove,
     };
 }

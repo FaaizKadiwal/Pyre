@@ -1,0 +1,12 @@
+{
+  "name": "Pyre",
+  "short_name": "Pyre",
+  "description": "The Shithead card game for 2 to 5 players, live in the browser.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#120f0d",
+  "theme_color": "#120f0d",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}
