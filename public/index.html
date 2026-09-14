@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="color-scheme" content="dark">
+    <title>Card Game</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect x='10' y='4' width='44' height='56' rx='6' fill='%23fdfdf8' stroke='%23333' stroke-width='3'/%3E%3Ctext x='32' y='44' font-size='34' text-anchor='middle' fill='%23c9202b'%3E%E2%99%A5%3C/text%3E%3C/svg%3E">
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <main id="app">
+        <section id="lobby" class="screen">
+            <h1>Card Game</h1>
+            <p class="tagline">Shed all your cards. Power cards change the rules.</p>
+
+            <label class="field" for="name-input">Your name</label>
+            <input id="name-input" type="text" maxlength="20" autocomplete="nickname" placeholder="e.g. Faaiz">
+
+            <div class="lobby-actions">
+                <button id="create-room" class="primary" type="button">Create a room</button>
+                <form id="join-form" autocomplete="off">
+                    <input id="room-id-input" type="text" maxlength="5" placeholder="Room code" aria-label="Room code" spellcheck="false">
+                    <button type="submit">Join</button>
+                </form>
+            </div>
+            <p id="lobby-message" class="message" role="status" aria-live="polite"></p>
+
+            <h2>Open rooms</h2>
+            <ul id="room-list" class="room-list" aria-live="polite"></ul>
+
+            <details class="rules">
+                <summary>How to play</summary>
+                <ul>
+                    <li>Everyone gets 3 face-down cards, 3 face-up cards on top of them, and 3 in hand. 2 to 5 players.</li>
+                    <li>On your turn play a card that matches the <strong>suit or value</strong> of the top of the pile. Your hand refills to 3 while the deck lasts.</li>
+                    <li><strong>2</strong> can be played on anything and resets the pile: anything can follow it.</li>
+                    <li><strong>7</strong> can be played on anything. The next card must be <strong>lower than 7</strong> (or another power card).</li>
+                    <li><strong>10</strong> can be played on anything and <strong>burns</strong> the pile. You play again.</li>
+                    <li>No playable card? Pick up the whole pile.</li>
+                    <li>Once your hand and the deck are empty, play your face-up cards, then flip your face-down cards blind. A bad flip means you pick up the pile.</li>
+                    <li>First to get rid of everything wins. The last player holding cards loses.</li>
+                </ul>
+            </details>
+        </section>
+
+        <section id="room" class="screen" hidden>
+            <header id="room-header">
+                <div>
+                    <span class="label">Room</span>
+                    <strong id="room-code" class="code"></strong>
+                    <span id="player-count" class="label"></span>
+                </div>
+                <button id="leave-room" type="button">Leave</button>
+            </header>
+
+            <div id="table" aria-label="Game table">
+                <div id="opponents" class="players"></div>
+                <div id="center">
+                    <div class="stack">
+                        <div id="deck" class="pile-area"></div>
+                        <span class="label">Deck</span>
+                    </div>
+                    <div class="stack">
+                        <div id="pile" class="pile-area"></div>
+                        <span class="label">Pile</span>
+                    </div>
+                </div>
+                <div id="me"></div>
+            </div>
+
+            <div id="controls">
+                <p id="status" role="status" aria-live="assertive"></p>
+                <div class="buttons">
+                    <button id="start-game" class="primary" type="button" hidden>Start game</button>
+                    <button id="pick-up" class="warn" type="button" hidden>Pick up pile</button>
+                </div>
+                <ol id="log" class="log" aria-label="Game log"></ol>
+            </div>
+
+            <aside id="chat" aria-label="Chat">
+                <div id="messages" class="messages"></div>
+                <form id="chat-form" autocomplete="off">
+                    <input id="message-input" type="text" maxlength="300" placeholder="Say something…" aria-label="Chat message">
+                    <button type="submit">Send</button>
+                </form>
+            </aside>
+        </section>
+    </main>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script type="module" src="js/game.js"></script>
+</body>
+</html>
