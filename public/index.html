@@ -49,8 +49,18 @@
                     <h2 id="enter-title">Play</h2>
                     <label class="field" for="name-input">Your name</label>
                     <input id="name-input" type="text" maxlength="20" autocomplete="nickname" placeholder="e.g. Faaiz">
-                    <p class="field">Your avatar</p>
-                    <div id="avatar-picker" class="avatar-picker" role="radiogroup" aria-label="Avatar"></div>
+                    <div class="look-row">
+                        <div>
+                            <p class="field">Your avatar</p>
+                            <div id="avatar-picker" class="avatar-picker" role="radiogroup" aria-label="Avatar"></div>
+                        </div>
+                        <div class="look-side">
+                            <p class="field">Table theme</p>
+                            <div id="theme-picker" class="theme-picker" role="radiogroup" aria-label="Theme"></div>
+                            <p class="field">Sound</p>
+                            <button id="lobby-sound" class="toggle" type="button" aria-pressed="true">🔔 Sound on</button>
+                        </div>
+                    </div>
                     <div class="lobby-actions">
                         <button id="create-room" class="primary" type="button">Create a room</button>
                         <button id="play-bots" type="button">Play vs bots</button>

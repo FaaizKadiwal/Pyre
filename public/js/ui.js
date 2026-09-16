@@ -30,6 +30,8 @@ export const els = {
     playerCount: $('player-count'),
     themeToggle: $('theme-toggle'),
     soundToggle: $('sound-toggle'),
+    themePicker: $('theme-picker'),
+    lobbySound: $('lobby-sound'),
     copyInviteButton: $('copy-invite'),
     leaveButton: $('leave-room'),
     table: $('table'),
@@ -80,6 +82,9 @@ export const els = {
 const LOG_LIMIT = 40;
 const TOAST_MS = 2600;
 const THEME_COLORS = { ember: '#120f0d', midnight: '#0b1020', felt: '#0f2e1d' };
+/** Swatch colours for the lobby's theme picker: table shade and accent. */
+const THEME_SWATCHES = { ember: ['#2a1d16', '#ff7a3d'], midnight: ['#16224a', '#6ee7ff'], felt: ['#1f5f3a', '#ffd166'] };
+const THEME_LABELS = { ember: 'Ember', midnight: 'Midnight', felt: 'Felt' };
 export const RULE_INFO = {
     threes: { chip: '3 skips', label: 'Threes skip the next player' },
     sevens: { chip: '7 forces low', label: 'After a 7, play 7 or lower' },
@@ -140,12 +145,37 @@ export function renderSoundToggle(enabled) {
     els.soundToggle.textContent = enabled ? '🔔' : '🔕';
     els.soundToggle.setAttribute('aria-pressed', String(enabled));
     els.soundToggle.title = enabled ? 'Sound on' : 'Sound off';
+    els.lobbySound.textContent = enabled ? '🔔 Sound on' : '🔕 Sound off';
+    els.lobbySound.setAttribute('aria-pressed', String(enabled));
+}
+
+export function renderThemePicker(themes, current, onPick) {
+    els.themePicker.replaceChildren();
+    for (const id of themes) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'theme-option';
+        button.dataset.theme = id;
+        button.setAttribute('role', 'radio');
+        button.setAttribute('aria-checked', String(id === current));
+        const swatch = document.createElement('span');
+        swatch.className = 'swatch';
+        const [bg, accent] = THEME_SWATCHES[id] ?? THEME_SWATCHES.ember;
+        swatch.style.setProperty('--sw-bg', bg);
+        swatch.style.setProperty('--sw-accent', accent);
+        button.append(swatch, cell('span', THEME_LABELS[id] ?? id));
+        button.addEventListener('click', () => onPick(id));
+        els.themePicker.append(button);
+    }
 }
 
 export function applyTheme(name, { animate = false } = {}) {
     document.documentElement.dataset.theme = name;
     document.querySelector('meta[name="theme-color"]')?.setAttribute('content', THEME_COLORS[name] ?? THEME_COLORS.ember);
     els.themeToggle.title = `Theme: ${name}. Click to switch.`;
+    for (const button of els.themePicker.querySelectorAll('button')) {
+        button.setAttribute('aria-checked', String(button.dataset.theme === name));
+    }
     if (animate && !reduceMotion()) {
         els.app.classList.remove('theme-fade');
         void els.app.offsetWidth;
@@ -443,6 +473,19 @@ function opponentPanel(player, state, actions, canKick) {
     return panel;
 }
 
+/** A free chair between rounds. The host's chairs are buttons that seat a bot. */
+function emptySeat(isHost, onAddBot) {
+    const seat = document.createElement(isHost ? 'button' : 'div');
+    seat.className = 'empty-seat';
+    if (isHost) {
+        seat.type = 'button';
+        seat.title = 'Add a bot to this seat';
+        seat.addEventListener('click', onAddBot);
+    }
+    seat.append(cell('span', '+', 'seat-plus'), cell('span', isHost ? 'Open seat · add a bot' : 'Open seat', 'seat-label'));
+    return seat;
+}
+
 let selectedBefore = new Set();
 
 /**
@@ -730,6 +773,9 @@ export function renderRoom(state, actions, choice, { mover = null } = {}) {
     const me = state.players.find((p) => p.id === state.me);
     const canKick = Boolean(me?.isHost);
     els.opponents.replaceChildren(...state.players.filter((p) => p.id !== state.me).map((p) => opponentPanel(p, state, actions, canKick)));
+    if (state.status === 'waiting' || state.status === 'finished') {
+        for (let i = state.players.length; i < state.maxPlayers; i++) els.opponents.append(emptySeat(canKick, actions.addBot));
+    }
     els.me.replaceChildren(...(me ? [myPanel(me, state, actions, choice)] : []));
     lastCurrent = state.currentPlayerId;
 

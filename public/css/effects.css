@@ -5,21 +5,66 @@
    ========================================================================== */
 
 .brand { display: flex; align-items: center; justify-content: center; gap: 0.5rem; }
-.mark-slot { display: inline-flex; width: clamp(2.6rem, 7vw, 4.4rem); height: clamp(2.6rem, 7vw, 4.4rem); }
+.mark-slot { position: relative; display: inline-flex; width: clamp(2.6rem, 7vw, 4.4rem); height: clamp(2.6rem, 7vw, 4.4rem); }
 .mark-slot.small { width: 1.4rem; height: 1.4rem; margin-right: 0.15rem; align-self: center; }
-.mark { width: 100%; height: 100%; overflow: visible; filter: drop-shadow(0 0 10px var(--glow)); }
-.mark .tongue { transform-origin: 50% 95%; }
-.mark .tongue-a { fill: var(--accent); animation: flicker 1.9s ease-in-out infinite; }
-.mark .tongue-b { fill: var(--accent-2); animation: flicker 1.4s ease-in-out infinite reverse; }
-.mark .tongue-c { fill: #fff2c9; animation: flicker 1.1s ease-in-out infinite; }
+/* The glow is a soft disc behind the mark rather than a filter, so the moving flame never re-rasterises. */
+.mark-slot::before {
+    content: "";
+    position: absolute;
+    inset: -26%;
+    border-radius: 50%;
+    background: radial-gradient(circle at 50% 62%, var(--glow) 0%, transparent 58%);
+    animation: glow-breathe 2.8s ease-in-out infinite;
+    pointer-events: none;
+}
+.mark-slot.small::before { inset: -55%; }
+.mark { position: relative; width: 100%; height: 100%; overflow: visible; }
+.mark .flame, .mark .tongue, .mark .spark { transform-box: fill-box; }
+/* A steady fire: the tongues lean and stretch slowly from the base, the core throbs, sparks lift off. */
+.mark .flame { transform-origin: 50% 100%; animation: flame-breathe 4.2s ease-in-out infinite; }
+.mark .tongue-a { transform-origin: 50% 100%; animation: flame-sway 3.6s ease-in-out infinite; }
+.mark .tongue-b { transform-origin: 50% 100%; animation: flame-sway 2.7s ease-in-out infinite reverse; }
+.mark .tongue-c { fill: #fff8e8; transform-origin: 50% 100%; animation: flame-core 1.8s ease-in-out infinite; }
+.mark .stop-base { stop-color: var(--accent); }
+.mark .stop-mid { stop-color: var(--accent-2); }
+.mark .stop-tip { stop-color: #fff2cf; }
+.mark .stop-core { stop-color: #ffffff; }
+.mark .spark { fill: var(--accent-2); opacity: 0; transform-origin: 50% 50%; animation: spark 2.8s ease-out infinite; }
+.mark .spark.s2 { animation-duration: 3.4s; animation-delay: -1.1s; }
+.mark .spark.s3 { animation-duration: 2.4s; animation-delay: -1.9s; }
+.mark-slot.small .spark { display: none; }
+@keyframes flame-breathe {
+    0%, 100% { transform: scaleY(1); }
+    50% { transform: scaleY(1.025); }
+}
+@keyframes flame-sway {
+    0%, 100% { transform: skewX(0deg) scale(1, 1); }
+    30% { transform: skewX(1.8deg) scale(1.01, 1.03); }
+    60% { transform: skewX(-1.4deg) scale(0.99, 1.05); }
+    80% { transform: skewX(0.6deg) scale(1.005, 0.99); }
+}
+@keyframes flame-core {
+    0%, 100% { transform: scale(1, 1); opacity: 0.92; }
+    50% { transform: scale(1.08, 0.93); opacity: 1; }
+}
+@keyframes glow-breathe {
+    0%, 100% { opacity: 0.55; transform: scale(0.96); }
+    50% { opacity: 0.85; transform: scale(1.06); }
+}
+@keyframes spark {
+    0% { transform: translate(0, 0) scale(1); opacity: 0; }
+    12% { opacity: 0.95; }
+    100% { transform: translate(var(--sx, 0px), -8px) scale(0.2); opacity: 0; }
+}
+/* Kept for the Inferno mode icon. */
 @keyframes flicker {
     0%, 100% { transform: scaleY(1) scaleX(1); }
     35% { transform: scaleY(1.08) scaleX(0.96) translateX(-1px); }
     70% { transform: scaleY(0.94) scaleX(1.04) translateX(1px); }
 }
 @media (hover: hover) {
-    .brand:hover .mark { filter: drop-shadow(0 0 18px var(--accent)); }
-    .brand:hover .mark .tongue { animation-duration: 0.6s; }
+    .brand:hover .mark-slot::before { animation-duration: 1.2s; }
+    .brand:hover .mark .tongue-a, .brand:hover .mark .tongue-b { animation-duration: 1.4s; }
 }
 
 /* ----- Ambient: suit marks drifting up behind everything ----- */
@@ -67,7 +112,6 @@
     grid-template-columns: repeat(6, minmax(0, 1fr));
     gap: 0.4rem;
     max-width: 21rem;
-    margin-bottom: 0.9rem;
 }
 .avatar-option {
     aspect-ratio: 1;
@@ -288,7 +332,7 @@ button.primary::after {
 .chat-avatar { width: 1em; height: 1em; vertical-align: -0.15em; margin-right: 0.25em; fill: currentColor; }
 
 @media (prefers-reduced-motion: reduce) {
-    .mark .tongue, .ambient span, #app.theme-fade, .avatar-option[aria-checked="true"], .stamp, .direction.spin .arrow,
+    .mark .flame, .mark .tongue, .mark .spark, .mark-slot::before, .ambient span, #app.theme-fade, .avatar-option[aria-checked="true"], .stamp, .direction.spin .arrow,
     .ticker .toast, .pile-area .card.reveal, button.primary::after, .mode-option .mode-icon svg { animation: none; }
     .ambient { display: none; }
     .ticker .toast { opacity: 1; }

@@ -285,6 +285,8 @@ const actions = {
     setRules: (rules) => act('update-settings', { rules }),
 
     setMode: (mode) => act('update-settings', { mode }),
+
+    addBot: () => act('add-bot'),
 };
 
 // ---------- Screen transitions ----------
@@ -346,6 +348,7 @@ async function createRoom(bots = 0) {
 
 ui.els.nameInput.value = storage.get(NAME_KEY) ?? '';
 ui.renderSoundToggle(sound.isEnabled());
+ui.renderThemePicker(THEMES, THEMES[0], setTheme);
 ui.applyTheme(THEMES.includes(storage.get(THEME_KEY)) ? storage.get(THEME_KEY) : THEMES[0]);
 pickAvatar(storage.get(AVATAR_KEY) ?? AVATARS[Math.floor(Math.random() * AVATARS.length)]);
 pickMode(storage.get(MODE_KEY) ?? MODES[0]);
@@ -379,11 +382,14 @@ ui.els.themeToggle.addEventListener('click', () => {
     setTheme(THEMES[(THEMES.indexOf(current) + 1) % THEMES.length]);
 });
 
-ui.els.soundToggle.addEventListener('click', () => {
+function toggleSound() {
     sound.setEnabled(!sound.isEnabled());
     ui.renderSoundToggle(sound.isEnabled());
     if (sound.isEnabled()) sound.play('yourTurn');
-});
+}
+
+ui.els.soundToggle.addEventListener('click', toggleSound);
+ui.els.lobbySound.addEventListener('click', toggleSound);
 
 ui.els.copyInviteButton.addEventListener('click', async () => {
     if (!state) return;

@@ -252,10 +252,14 @@ input[type="text"]:focus { border-color: var(--accent); box-shadow: 0 0 0 3px va
     text-transform: uppercase;
 }
 .wordmark {
+    /* Gradient text only paints inside its own box, so leave room for the descender of the y. */
+    display: inline-block;
     font-family: var(--font-display);
     font-weight: 800;
     font-size: clamp(3rem, 9vw, 5.5rem);
-    line-height: 0.95;
+    line-height: 1.1;
+    padding: 0 0.06em 0.1em;
+    margin-bottom: -0.1em;
     letter-spacing: -0.03em;
     background: linear-gradient(120deg, var(--text) 0%, var(--accent-2) 45%, var(--accent) 100%);
     -webkit-background-clip: text;
@@ -398,6 +402,38 @@ kbd {
 
 .field { display: block; margin-bottom: 0.35rem; color: var(--muted); font-size: 0.9rem; }
 #name-input { width: 100%; margin-bottom: 0.9rem; }
+
+/* Avatar on the left, theme and sound on the right; one column on narrow screens. */
+.look-row { display: grid; grid-template-columns: minmax(0, 21rem) minmax(11rem, 1fr); gap: 0.5rem 1.5rem; align-items: start; margin-bottom: 0.9rem; }
+@media (max-width: 640px) {
+    .look-row { grid-template-columns: minmax(0, 1fr); }
+}
+.theme-picker { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-bottom: 0.9rem; }
+.theme-option {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    padding: 0.4rem 0.8rem 0.4rem 0.5rem;
+    border-radius: 999px;
+    font-size: 0.88rem;
+    color: var(--muted);
+}
+.theme-option .swatch {
+    width: 1.15rem;
+    height: 1.15rem;
+    border-radius: 50%;
+    background: linear-gradient(135deg, var(--sw-bg) 0 50%, var(--sw-accent) 50% 100%);
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.28);
+    flex: none;
+}
+.theme-option[aria-checked="true"], .theme-option[aria-checked="true"]:hover {
+    color: var(--text);
+    background: var(--surface-2);
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--glow);
+}
+#lobby-sound { border-radius: 999px; padding: 0.4rem 0.85rem; font-size: 0.88rem; }
+#lobby-sound[aria-pressed="false"] { color: var(--muted); }
 .lobby-actions {
     display: grid;
     grid-template-columns: 1fr 1fr;
@@ -564,6 +600,36 @@ kbd {
 .players .player {
     --card-w: calc(var(--card-base) * var(--opponent-scale));
     --card-h: calc(var(--card-w) * 1.4);
+}
+
+/* Free chairs between rounds; the host can fill one with a bot by clicking it. */
+.empty-seat {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.55rem;
+    padding: 0.6rem 0.95rem;
+    min-height: 3.2rem;
+    border: 2px dashed var(--line);
+    border-radius: 18px;
+    background: transparent;
+    color: var(--muted);
+    font-weight: 600;
+    font-size: 0.88rem;
+    transition: border-color 0.2s, color 0.2s, background 0.2s, transform 0.15s var(--ease);
+}
+.empty-seat .seat-plus {
+    display: inline-grid;
+    place-items: center;
+    width: 1.6rem;
+    height: 1.6rem;
+    border-radius: 50%;
+    border: 1.5px dashed currentColor;
+    font-size: 1rem;
+    line-height: 1;
+}
+button.empty-seat { cursor: pointer; }
+@media (hover: hover) {
+    button.empty-seat:hover { border-color: var(--accent-2); color: var(--text); background: var(--surface); transform: translateY(-2px); }
 }
 
 .player {
@@ -976,6 +1042,7 @@ button.card:disabled { cursor: not-allowed; opacity: 0.5; }
 .log { margin: 0; padding: 0; list-style: none; font-size: 0.85rem; color: var(--muted); max-height: 7.5em; overflow-y: auto; }
 .log li { padding: 0.15rem 0; animation: tick-in 0.3s var(--ease); }
 .log li:first-child { color: var(--text); }
+.log:empty::before { content: "Table events will appear here."; color: var(--muted); font-size: 0.85rem; }
 
 #chat {
     display: flex;
@@ -988,6 +1055,7 @@ button.card:disabled { cursor: not-allowed; opacity: 0.5; }
 .messages .msg { padding: 0.35rem 0.55rem; background: var(--surface-2); border-radius: var(--radius-sm); word-break: break-word; animation: msg-in 0.28s var(--ease); }
 .messages .msg.mine { background: rgba(255, 200, 87, 0.16); }
 .messages .msg .who { font-weight: 700; margin-right: 0.35rem; }
+.messages:empty::before { content: "Say hi to the table, or send a quick reaction below."; margin: auto; color: var(--muted); font-size: 0.85rem; text-align: center; padding: 0 1rem; }
 @keyframes msg-in {
     from { opacity: 0; transform: translateY(6px); }
     to { opacity: 1; transform: none; }

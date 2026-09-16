@@ -11,13 +11,13 @@ Pick a mode and an avatar, create a room, send the invite link or play against b
 - 🎮 **Real-time rooms** – Invite links, a public room list with mode tags, private rooms, in-room chat, and table talk: emoji and quick phrases that float over the sender's seat.
 - 🃏 **Standard Shithead rules** – Beat the pile with equal or higher cards, play sets, swap cards before play, burn with a ten or four of a kind. Rules follow [pagat.com](https://www.pagat.com/beating/shithead.html).
 - 🏠 **House rules** – 3 skips, 7 forces low, see-through 8, 9 reverses, wild jokers, low tens. Switch them on one by one or through a mode.
-- 🤖 **Bots with two levels** – One click seats three bots and deals. Bots swap sensibly, finish four of a kind, keep their magic cards for when it matters, react to what happens to them, and hold the seat of anyone who drops out until they are back.
+- 🤖 **Bots with two levels** – One click seats three bots and deals, and every open seat at the table can be filled with a bot by clicking it. Bots swap sensibly, finish four of a kind, keep their magic cards for when it matters, react to what happens to them, and hold the seat of anyone who drops out until they are back.
 - 👀 **Spectators** – Join a room mid-round to watch; you are dealt in at the next deal.
 - ⏱️ **Turn timer** – From 15 seconds to 2 minutes, or off. The game plays for anyone who runs out of time, in the swap phase too, and after two missed turns the table takes over until that player acts again.
 - 🔄 **Reconnection** – Reload the page or lose signal and your seat and cards are still waiting for you.
 - 👑 **Host tools** – Deal, restart, change settings between rounds, start play early, remove a player or a bot.
 - 🏆 **Scoreboards** – Wins and shithead counts per room, a global leaderboard, a recent-games feed, a round summary with burns, biggest pick-up and length, the session's round history, and a personal record kept on your device.
-- 🎨 **Card-table look** – Twelve avatars, a flickering flame mark, three themes (Ember, Midnight and Felt), suit marks drifting behind the table, a clock ring around whoever is on turn, a turn-order rail, a live ticker of table events, a deck that thins as it is dealt, a pile that fans out its last cards, cards that land from the seat that played them and fly to whoever picks up, blind-flip reveals, confetti and synthesised sound cues. All of it respects reduced-motion settings.
+- 🎨 **Card-table look** – Twelve avatars, a steadily burning flame mark, three themes (Ember, Midnight and Felt) and a sound switch on the main page and at the table, suit marks drifting behind the table, a clock ring around whoever is on turn, a turn-order rail, a live ticker of table events, a deck that thins as it is dealt, a pile that fans out its last cards, cards that land from the seat that played them and fly to whoever picks up, blind-flip reveals, confetti and synthesised sound cues. All of it respects reduced-motion settings.
 - ⌨️ **Keyboard play** – Digits pick cards, Enter plays or readies, P picks up, Esc clears.
 - 📱 **Responsive** – From 320px phones to large monitors, installable to a home screen.
 

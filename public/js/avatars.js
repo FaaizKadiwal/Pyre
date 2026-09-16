@@ -60,11 +60,56 @@ export function avatarNode(id, className = '') {
     return svg(GLYPHS[id] ?? GLYPHS.flame, className);
 }
 
-/** The Pyre mark: a three-tongued flame that the stylesheet animates. */
+let markCount = 0;
+
+/**
+ * The Pyre mark: three nested tongues of flame filled with theme-coloured
+ * gradients (the stops take their colours from the stylesheet), plus three
+ * sparks. The stylesheet gives it a slow, candle-like sway rather than a flicker.
+ */
 export function flameMark(className = 'mark') {
-    return svg([
-        ['path', { class: 'tongue tongue-a', d: 'M12 22c-4.4 0-7.5-3-7.5-7 0-3.3 2.3-5.3 3.4-7.5.5 2.3 1.6 3.1 2.5 3.4 0-2.8.6-6.2 4-8.4-.3 3.3 1.6 4.8 3.1 6.7 1.4 1.9 2 3.6 2 5.8 0 4-3.1 7-7.5 7z' }],
-        ['path', { class: 'tongue tongue-b', d: 'M12 20.5c-2.6 0-4.4-1.9-4.4-4.4 0-2 1.3-3.2 2.1-4.6.3 1.4 1 2 1.7 2.3 0-1.7.4-3.8 2.5-5.2-.2 2 1 3 1.9 4.1.9 1.2 1.2 2.2 1.2 3.4 0 2.5-1.8 4.4-5 4.4z' }],
+    const id = `pyre-fire-${++markCount}`;
+    const el = document.createElementNS(NS, 'svg');
+    el.setAttribute('viewBox', '0 0 24 24');
+    el.setAttribute('aria-hidden', 'true');
+    el.setAttribute('focusable', 'false');
+    el.setAttribute('class', className);
+
+    const gradient = (suffix, stops) => {
+        const g = document.createElementNS(NS, 'linearGradient');
+        g.id = `${id}-${suffix}`;
+        for (const [key, value] of Object.entries({ x1: 0, y1: 1, x2: 0, y2: 0 })) g.setAttribute(key, String(value));
+        for (const [offset, cls] of stops) {
+            const stop = document.createElementNS(NS, 'stop');
+            stop.setAttribute('offset', offset);
+            stop.setAttribute('class', cls);
+            g.append(stop);
+        }
+        return g;
+    };
+    const defs = document.createElementNS(NS, 'defs');
+    defs.append(
+        gradient('outer', [['0', 'stop-base'], ['0.55', 'stop-mid'], ['1', 'stop-tip']]),
+        gradient('inner', [['0', 'stop-mid'], ['0.65', 'stop-tip'], ['1', 'stop-core']]),
+    );
+
+    const flame = document.createElementNS(NS, 'g');
+    flame.setAttribute('class', 'flame');
+    const parts = [
+        ['path', { class: 'tongue tongue-a', fill: `url(#${id}-outer)`, d: 'M12 22c-4.4 0-7.5-3-7.5-7 0-3.3 2.3-5.3 3.4-7.5.5 2.3 1.6 3.1 2.5 3.4 0-2.8.6-6.2 4-8.4-.3 3.3 1.6 4.8 3.1 6.7 1.4 1.9 2 3.6 2 5.8 0 4-3.1 7-7.5 7z' }],
+        ['path', { class: 'tongue tongue-b', fill: `url(#${id}-inner)`, d: 'M12 20.5c-2.6 0-4.4-1.9-4.4-4.4 0-2 1.3-3.2 2.1-4.6.3 1.4 1 2 1.7 2.3 0-1.7.4-3.8 2.5-5.2-.2 2 1 3 1.9 4.1.9 1.2 1.2 2.2 1.2 3.4 0 2.5-1.8 4.4-5 4.4z' }],
         ['path', { class: 'tongue tongue-c', d: 'M12 19c-1.3 0-2.2-1-2.2-2.2 0-1 .7-1.6 1.1-2.3.2.7.5 1 .9 1.1 0-.9.2-1.9 1.2-2.6-.1 1 .5 1.5.9 2.1.5.6.6 1.1.6 1.7 0 1.2-.9 2.2-2.5 2.2z' }],
-    ], className);
+        ['circle', { class: 'spark s1', cx: 9.2, cy: 7.5, r: 0.7 }, '-1.5px'],
+        ['circle', { class: 'spark s2', cx: 12.6, cy: 4.5, r: 0.55 }, '1px'],
+        ['circle', { class: 'spark s3', cx: 15.4, cy: 8.2, r: 0.6 }, '1.8px'],
+    ];
+    for (const [tag, attrs, drift] of parts) {
+        const node = document.createElementNS(NS, tag);
+        for (const [key, value] of Object.entries(attrs)) node.setAttribute(key, String(value));
+        // Through the CSSOM, not a style attribute: the CSP forbids inline style text.
+        if (drift) node.style.setProperty('--sx', drift);
+        flame.append(node);
+    }
+    el.append(defs, flame);
+    return el;
 }
