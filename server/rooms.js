@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import * as logic from './gameLogic.js';
-import { BOT_NAMES } from './bots.js';
+import { BOT_NAMES, LEVELS } from './bots.js';
 import { createMemoryResultStore } from './results.js';
 
 // Unambiguous alphabet: no 0/O or 1/I.
@@ -11,9 +11,41 @@ const MESSAGE_MAX = 300;
 const MAX_ROOMS = 500;
 const TURN_SECONDS_MAX = 300;
 const COLOR_COUNT = 8;
-const DEFAULT_SETTINGS = { turnSeconds: 60, private: false };
-/** The emoji a player may send as a reaction. */
-const REACTIONS = ['👏', '😂', '😱', '🔥', '😈', '💩', '👋', '🤔'];
+const HISTORY_LIMIT = 10;
+/** The emoji and short phrases a player may send as a reaction. */
+const REACTIONS = ['👏', '😂', '😱', '🔥', '😈', '💩', '👋', '🤔', 'gg', 'Well played!', 'Hurry up!', 'Oops'];
+/** The avatar glyphs the client can draw; the server only stores the id. */
+const AVATARS = ['flame', 'spade', 'heart', 'club', 'diamond', 'crown', 'star', 'bolt', 'moon', 'dice', 'joker', 'ace'];
+/**
+ * Ways to play, picked on the main page or in the room. Each mode is a turn
+ * clock plus a set of house rules; `custom` is whatever the host tuned by hand.
+ */
+const MODES = Object.freeze({
+    classic: { turnSeconds: 60, rules: {} },
+    party: { turnSeconds: 60, rules: { threes: true, sevens: true, eights: true, nines: true, jokers: true } },
+    blitz: { turnSeconds: 15, rules: {} },
+    inferno: { turnSeconds: 20, rules: { threes: true, sevens: true, eights: true, nines: true, jokers: true, tensLow: true } },
+});
+const MODE_NAMES = Object.keys(MODES);
+const DEFAULT_MODE = 'classic';
+const DEFAULT_SETTINGS = Object.freeze({ turnSeconds: 60, private: false, botLevel: 'normal', rules: logic.DEFAULT_RULES, mode: DEFAULT_MODE });
+
+function cleanMode(raw) {
+    return MODE_NAMES.includes(raw) ? raw : DEFAULT_MODE;
+}
+
+/** The turn clock and rules of a mode, ready to spread into a settings object. */
+function modeSettings(mode) {
+    return { turnSeconds: MODES[mode].turnSeconds, rules: { ...logic.DEFAULT_RULES, ...MODES[mode].rules } };
+}
+
+/** Which mode a settings object amounts to, or `custom` when the host tuned it by hand. */
+function modeOf(settings) {
+    return MODE_NAMES.find((mode) => {
+        const preset = modeSettings(mode);
+        return preset.turnSeconds === settings.turnSeconds && logic.RULE_KEYS.every((key) => preset.rules[key] === settings.rules[key]);
+    }) ?? 'custom';
+}
 
 /**
  * All server state lives here. `results` persists finished games (memory or
@@ -34,7 +66,7 @@ function createStore({ results = createMemoryResultStore(), random = Math.random
         random,
         maxRooms,
         rateLimit: { windowMs: 5_000, actions: 30, chat: 5 },
-        botDelay: { swapMs: 700, moveMs: 900 },
+        botDelay: { swapMs: 700, moveMs: 900, awayMs: 1_500 },
     };
 }
 
@@ -70,6 +102,10 @@ function cleanReaction(raw) {
     return REACTIONS.includes(raw) ? raw : null;
 }
 
+function cleanAvatar(raw, fallback = 0) {
+    return AVATARS.includes(raw) ? raw : AVATARS[fallback % AVATARS.length];
+}
+
 /** Two "Sam"s in one room become "Sam" and "Sam 2" so results and chat stay unambiguous. */
 function uniqueName(room, name) {
     const taken = new Set(room.players.map((p) => p.name.toLowerCase()));
@@ -89,7 +125,7 @@ function nextColor(room) {
     return room.players.length % COLOR_COUNT;
 }
 
-function newPlayer(socketId, name, isHost, color) {
+function newPlayer(socketId, name, isHost, color, avatar) {
     return {
         id: crypto.randomUUID(),
         socketId,
@@ -98,12 +134,18 @@ function newPlayer(socketId, name, isHost, color) {
         isHost,
         connected: true,
         color,
+        avatar,
         isBot: false,
+        away: false,
+        timeouts: 0,
     };
 }
 
-function newBot(name, color) {
-    return { id: crypto.randomUUID(), socketId: null, token: null, name, isHost: false, connected: true, color, isBot: true };
+function newBot(name, color, avatar) {
+    return {
+        id: crypto.randomUUID(), socketId: null, token: null, name, isHost: false, connected: true, color, avatar,
+        isBot: true, away: false, timeouts: 0,
+    };
 }
 
 function safeEqual(a, b) {
@@ -144,20 +186,21 @@ function playerById(room, playerId) {
     return room.players.find((p) => p.id === playerId) ?? null;
 }
 
-function createRoom(store, socketId, name) {
+function createRoom(store, socketId, name, avatar, mode = DEFAULT_MODE) {
     if (store.rooms.size >= store.maxRooms) {
         return { error: 'The server is full right now, please try again in a minute' };
     }
-    const player = newPlayer(socketId, name, true, 0);
+    const player = newPlayer(socketId, name, true, 0, cleanAvatar(avatar, 0));
     const room = {
         id: generateRoomId(store.rooms),
         players: [player],
         game: null,
         createdAt: Date.now(),
         startedAt: null,
-        settings: { ...DEFAULT_SETTINGS },
+        settings: { ...DEFAULT_SETTINGS, ...modeSettings(cleanMode(mode)), mode: cleanMode(mode) },
         scores: {},                          // playerId -> games won in this room
         losses: {},                          // playerId -> times the shithead in this room
+        history: [],                         // last rounds: { winner, loser, durationSeconds, burns, at }
         dealer: null,                         // seat index of the last dealer
         turn: { endsAt: null, handle: null }, // turn timer, managed by gameService
         bot: { handle: null },                // bot think timer, managed by gameService
@@ -167,12 +210,13 @@ function createRoom(store, socketId, name) {
     return { ok: true, room, player };
 }
 
-function joinRoom(store, socketId, roomId, name) {
+function joinRoom(store, socketId, roomId, name, avatar) {
     const room = store.rooms.get(roomId);
     if (!room) return { error: 'Room not found' };
     if (!isJoinable(room)) return { error: 'Room is full' };
 
-    const player = newPlayer(socketId, uniqueName(room, name), false, nextColor(room));
+    const color = nextColor(room);
+    const player = newPlayer(socketId, uniqueName(room, name), false, color, cleanAvatar(avatar, color));
     room.players.push(player);
     bind(store, socketId, room, player);
     return { ok: true, room, player, spectating: isRunning(room) };
@@ -182,8 +226,9 @@ function addBot(room, host) {
     if (!host.isHost) return { error: 'Only the host can add bots' };
     if (isRunning(room)) return { error: 'Bots can only be added between games' };
     if (!isJoinable(room)) return { error: 'Room is full' };
-    const name = BOT_NAMES.find((n) => !room.players.some((p) => p.name === n)) ?? uniqueName(room, 'Bot');
-    const bot = newBot(name, nextColor(room));
+    const index = BOT_NAMES.findIndex((n) => !room.players.some((p) => p.name === n));
+    const name = index === -1 ? uniqueName(room, 'Bot') : BOT_NAMES[index];
+    const bot = newBot(name, nextColor(room), AVATARS[(index + 5) % AVATARS.length]);
     room.players.push(bot);
     return { ok: true, player: bot };
 }
@@ -250,7 +295,11 @@ function updateSettings(room, player, patch) {
     if (!player.isHost) return { error: 'Only the host can change settings' };
     if (isRunning(room)) return { error: 'Settings cannot change during a game' };
 
-    const next = { ...room.settings };
+    const next = { ...room.settings, rules: { ...room.settings.rules } };
+    if (patch.mode != null) {
+        if (!MODE_NAMES.includes(patch.mode)) return { error: `Mode must be one of: ${MODE_NAMES.join(', ')}` };
+        Object.assign(next, modeSettings(patch.mode));
+    }
     if (patch.turnSeconds != null) {
         const seconds = Number(patch.turnSeconds);
         if (!Number.isInteger(seconds) || seconds < 0 || seconds > TURN_SECONDS_MAX) {
@@ -262,6 +311,16 @@ function updateSettings(room, player, patch) {
         if (typeof patch.private !== 'boolean') return { error: 'Private must be true or false' };
         next.private = patch.private;
     }
+    if (patch.botLevel != null) {
+        if (!LEVELS.includes(patch.botLevel)) return { error: `Bot level must be one of: ${LEVELS.join(', ')}` };
+        next.botLevel = patch.botLevel;
+    }
+    if (patch.rules != null) {
+        const result = logic.normaliseRules(patch.rules, next.rules);
+        if (result.error) return result;
+        next.rules = result.rules;
+    }
+    next.mode = modeOf(next);
     room.settings = next;
     return { ok: true, settings: next };
 }
@@ -273,12 +332,26 @@ function startGame(store, room, player) {
         return { error: `Need at least ${logic.MIN_PLAYERS} players to start` };
     }
     // "The dealer is randomly selected for the first hand. The deal rotates clockwise after each hand."
-    // The deal, and so the turn order, starts with the player to the dealer's left.
+    // The deal, and so the seating order, starts with the player to the dealer's left.
     const ids = room.players.map((p) => p.id);
     room.dealer = room.dealer === null ? Math.floor(store.random() * ids.length) : (room.dealer + 1) % ids.length;
-    room.game = logic.createGame([...ids.slice(room.dealer + 1), ...ids.slice(0, room.dealer + 1)], store.random);
+    room.game = logic.createGame([...ids.slice(room.dealer + 1), ...ids.slice(0, room.dealer + 1)], store.random, room.settings.rules);
     room.startedAt = Date.now();
+    for (const p of room.players) p.timeouts = 0;
     return { ok: true };
+}
+
+/** Remember how a completed round went, for the session panel. */
+function recordHistory(room, now = Date.now()) {
+    const game = room.game;
+    room.history.unshift({
+        winner: playerById(room, game.finished[0])?.name ?? 'Unknown',
+        loser: playerById(room, game.loser)?.name ?? 'Unknown',
+        durationSeconds: Math.max(0, Math.round((now - (room.startedAt ?? now)) / 1000)),
+        burns: game.stats.burns,
+        at: now,
+    });
+    if (room.history.length > HISTORY_LIMIT) room.history.length = HISTORY_LIMIT;
 }
 
 /** The record of a game that ran to completion, in finishing order. */
@@ -304,6 +377,8 @@ function summary(room) {
         maxPlayers: logic.MAX_PLAYERS,
         status: roomStatus(room),
         host: room.players.find((p) => p.isHost)?.name ?? '',
+        houseRules: Object.values(room.settings.rules).some(Boolean),
+        mode: room.settings.mode,
     };
 }
 
@@ -333,6 +408,7 @@ function buildView(room, viewer) {
         minPlayers: logic.MIN_PLAYERS,
         settings: room.settings,
         reactions: REACTIONS,
+        avatars: AVATARS,
         me: viewer.id,
         players: room.players.map((p) => {
             const c = game?.cards[p.id];
@@ -340,9 +416,11 @@ function buildView(room, viewer) {
                 id: p.id,
                 name: p.name,
                 color: p.color,
+                avatar: p.avatar,
                 isHost: p.isHost,
                 isBot: p.isBot,
                 connected: p.connected,
+                away: p.away,
                 wins: room.scores[p.id] ?? 0,
                 losses: room.losses[p.id] ?? 0,
                 inGame: Boolean(c),
@@ -358,10 +436,15 @@ function buildView(room, viewer) {
         hand: mine ? mine.hand : [],
         pile: {
             top: game && game.pile.length ? game.pile[game.pile.length - 1] : null,
+            effectiveTop: game ? logic.effectiveTop(game.pile, game.rules) : null,
             count: game ? game.pile.length : 0,
             topRun: game ? logic.topRun(game.pile) : 0,
+            // The few cards under the top, so the client can fan the pile out.
+            recent: game ? game.pile.slice(-5, -1) : [],
         },
         deckCount: game ? game.deck.length : 0,
+        direction: game ? game.direction : 1,
+        dealt: game ? game.dealt : 0,
         currentPlayerId: current,
         isMyTurn,
         turnEndsAt: room.turn.endsAt,
@@ -375,20 +458,26 @@ function buildView(room, viewer) {
         endReason: game ? game.endReason : null,
         stats: game ? game.stats : null,
         durationSeconds: game && room.startedAt ? Math.round((Date.now() - room.startedAt) / 1000) : 0,
+        history: room.history,
     };
 }
 
 export {
+    MODES,
+    MODE_NAMES,
+    cleanMode,
     NAME_MAX,
     MESSAGE_MAX,
     MAX_ROOMS,
     TURN_SECONDS_MAX,
     REACTIONS,
+    AVATARS,
     createStore,
     normaliseRoomId,
     cleanName,
     cleanMessage,
     cleanReaction,
+    cleanAvatar,
     uniqueName,
     lookup,
     playerById,
@@ -401,6 +490,7 @@ export {
     removePlayer,
     updateSettings,
     startGame,
+    recordHistory,
     buildResult,
     listRooms,
     buildView,

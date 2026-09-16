@@ -56,3 +56,12 @@ test('reactionFor gives bots a little personality', () => {
     assert.equal(reactionFor({ success: false, pickedUp: 2 }), '😱');
     assert.equal(reactionFor({ ok: true }), null);
 });
+
+
+test('easy bots play any legal card, and a joker is spent only as a last resort', () => {
+    const game = playingGame([C('4', 'hearts')], [C('5'), C('9'), C('10')]);
+    assert.deepEqual(chooseMove(game, 'bot', () => 0.5, 'easy'), { type: 'play', cards: [C('9')] });
+    const stuck = playingGame([C('A')], [C('3'), { suit: 'joker', value: 'JOKER' }]);
+    stuck.rules = { ...stuck.rules, jokers: true };
+    assert.deepEqual(chooseMove(stuck, 'bot'), { type: 'play', cards: [{ suit: 'joker', value: 'JOKER' }] });
+});

@@ -69,17 +69,86 @@ test('the first player is whoever received the lowest face-up card, then hand ca
 });
 
 test('canPlayOn: equal or higher beats, suits ignored, twos and tens are magic', () => {
-    assert.ok(logic.canPlayOn(C('3'), null), 'anything on an empty pile');
-    assert.ok(logic.canPlayOn(C('7', 'hearts'), C('7', 'clubs')), 'equal rank');
-    assert.ok(logic.canPlayOn(C('8', 'hearts'), C('7', 'clubs')), 'higher rank');
-    assert.ok(!logic.canPlayOn(C('6', 'clubs'), C('7', 'clubs')), 'lower rank, even in suit');
-    assert.ok(logic.canPlayOn(C('A'), C('K')), 'ace is highest');
-    assert.ok(!logic.canPlayOn(C('K'), C('A')), 'king does not beat ace');
-    assert.ok(logic.canPlayOn(C('2'), C('A')), 'a two goes on anything');
-    assert.ok(logic.canPlayOn(C('3'), C('2')), 'anything goes on a two');
-    assert.ok(logic.canPlayOn(C('10'), C('A')), 'a ten goes on anything');
-    assert.ok(logic.canPlayOn(C('10'), C('2')), 'a ten goes on a two');
-    assert.ok(logic.canPlayOn(C('J'), C('10')), 'a ten never stays on the pile, but is beaten by a jack if it did');
+    const on = (top) => (top ? [top] : []);
+    assert.ok(logic.canPlayOn(C('3'), on(null)), 'anything on an empty pile');
+    assert.ok(logic.canPlayOn(C('7', 'hearts'), on(C('7', 'clubs'))), 'equal rank');
+    assert.ok(logic.canPlayOn(C('8', 'hearts'), on(C('7', 'clubs'))), 'higher rank');
+    assert.ok(!logic.canPlayOn(C('6', 'clubs'), on(C('7', 'clubs'))), 'lower rank, even in suit');
+    assert.ok(logic.canPlayOn(C('A'), on(C('K'))), 'ace is highest');
+    assert.ok(!logic.canPlayOn(C('K'), on(C('A'))), 'king does not beat ace');
+    assert.ok(logic.canPlayOn(C('2'), on(C('A'))), 'a two goes on anything');
+    assert.ok(logic.canPlayOn(C('3'), on(C('2'))), 'anything goes on a two');
+    assert.ok(logic.canPlayOn(C('10'), on(C('A'))), 'a ten goes on anything');
+    assert.ok(logic.canPlayOn(C('10'), on(C('2'))), 'a ten goes on a two');
+    assert.ok(logic.canPlayOn(C('J'), on(C('10'))), 'a ten never stays on the pile, but is beaten by a jack if it did');
+});
+
+test('house rules: sevens force low, eights are transparent, tens can be kept low', () => {
+    const sevens = { ...logic.DEFAULT_RULES, sevens: true };
+    assert.ok(!logic.canPlayOn(C('8'), [C('7')], sevens), 'an 8 does not go on a 7');
+    assert.ok(logic.canPlayOn(C('7', 'hearts'), [C('7')], sevens), 'another 7 does');
+    assert.ok(logic.canPlayOn(C('3'), [C('7')], sevens), 'a low card does');
+    assert.ok(logic.canPlayOn(C('10'), [C('7')], sevens) && logic.canPlayOn(C('2'), [C('7')], sevens), 'a 2 or 10 still goes');
+    assert.ok(logic.canPlayOn(C('8'), [C('7')]), 'without the rule an 8 beats a 7');
+
+    const eights = { ...logic.DEFAULT_RULES, eights: true };
+    assert.ok(logic.canPlayOn(C('8'), [C('A')], eights), 'a transparent 8 goes on anything');
+    assert.deepEqual(logic.effectiveTop([C('K'), C('8'), C('8', 'hearts')], eights), C('K'), 'the card under the 8s must be beaten');
+    assert.ok(!logic.canPlayOn(C('9'), [C('K'), C('8')], eights), '9 does not beat the K under the 8');
+    assert.ok(logic.canPlayOn(C('A'), [C('K'), C('8')], eights));
+    assert.equal(logic.effectiveTop([C('8')], eights), null, 'only transparent cards means an open pile');
+    assert.ok(logic.canPlayOn(C('3'), [C('8')], eights));
+
+    const tensLow = { ...logic.DEFAULT_RULES, tensLow: true };
+    assert.ok(!logic.canPlayOn(C('10'), [C('J')], tensLow), 'no ten on a jack');
+    assert.ok(logic.canPlayOn(C('10'), [C('9')], tensLow) && logic.canPlayOn(C('10'), [C('2')], tensLow) && logic.canPlayOn(C('10'), [], tensLow));
+});
+
+test('house rules: nines and jokers reverse, threes skip, jokers are wild and transparent', () => {
+    const rules = { ...logic.DEFAULT_RULES, nines: true, threes: true, jokers: true };
+    const game = logic.createGame(['a', 'b', 'c'], () => 0.5, rules);
+    assert.equal(game.deck.length + 27, 54, 'two jokers joined the deck');
+    game.status = 'playing';
+    game.deck = [];
+    game.pile = [];
+    game.cards.a = { hand: [C('9'), C('3'), C('3', 'hearts'), { ...logic.JOKER }], faceUp: [], faceDown: [] };
+    game.cards.b = { hand: [C('Q'), C('4'), { ...logic.JOKER }], faceUp: [], faceDown: [] };
+    game.cards.c = { hand: [C('K'), C('5')], faceUp: [], faceDown: [] };
+    game.turn = 0;
+
+    let result = logic.playCards(game, 'a', [C('9')]);
+    assert.equal(result.effects.reversed, true);
+    assert.equal(game.direction, -1);
+    assert.equal(logic.currentPlayerId(game), 'c', 'play now runs the other way');
+
+    logic.playCards(game, 'c', [C('K')]);
+    assert.equal(logic.currentPlayerId(game), 'b');
+    assert.ok(!logic.canPlayOn(C('4'), game.pile, rules), 'b cannot beat the king');
+    result = logic.playCards(game, 'b', [C('Q')]);
+    assert.match(result.error, /cannot be played/);
+
+    const joker = logic.playCards(game, 'b', [{ ...logic.JOKER }]);
+    assert.equal(joker.error, undefined, 'a joker goes on anything');
+    assert.equal(joker.effects.reversed, true);
+    assert.equal(game.direction, 1, 'and reverses again');
+    assert.deepEqual(logic.effectiveTop(game.pile, rules), C('K'), 'the joker is transparent: the king is still to beat');
+    assert.equal(logic.currentPlayerId(game), 'c');
+
+    game.cards.c.hand = [C('3', 'clubs'), C('3', 'diamonds'), C('A')];
+    result = logic.playCards(game, 'c', [C('3', 'clubs'), C('3', 'diamonds')]);
+    assert.match(result.error, /cannot be played/, 'threes still have to beat the pile');
+    game.pile = [];
+    result = logic.playCards(game, 'c', [C('3', 'clubs'), C('3', 'diamonds')]);
+    assert.deepEqual(result.effects.skipped, ['a', 'b'], 'two threes skip two players');
+    assert.equal(logic.currentPlayerId(game), 'c', 'which with three players comes straight back');
+});
+
+test('normaliseRules accepts only known boolean flags', () => {
+    assert.deepEqual(logic.normaliseRules({ sevens: true }).rules, { ...logic.DEFAULT_RULES, sevens: true });
+    assert.match(logic.normaliseRules({ fives: true }).error, /Unknown rule/);
+    assert.match(logic.normaliseRules({ sevens: 'yes' }).error, /true or false/);
+    assert.match(logic.normaliseRules([true]).error, /object/);
+    assert.deepEqual(logic.normaliseRules(undefined).rules, { ...logic.DEFAULT_RULES });
 });
 
 test('swapping exchanges hand and face-up cards until Ready, and play begins when everyone is ready', () => {

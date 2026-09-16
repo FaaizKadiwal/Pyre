@@ -1,19 +1,24 @@
 // Card presentation helpers: pure functions that build DOM nodes.
 
 const SYMBOLS = { hearts: '♥', diamonds: '♦', clubs: '♣', spades: '♠' };
-const SUIT_ORDER = { clubs: 0, diamonds: 1, spades: 2, hearts: 3 };
-// Shithead order: 3 is lowest, ace highest, twos are magic and shown last.
+const SUIT_ORDER = { clubs: 0, diamonds: 1, spades: 2, hearts: 3, joker: 4 };
+// Shithead order: 3 is lowest, ace highest, the special cards shown last.
 const RANK = Object.fromEntries(
-    ['3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A', '2'].map((v, i) => [v, i]),
+    ['3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A', '2', 'JOKER'].map((v, i) => [v, i]),
 );
 const MAGIC = new Set(['2', '10']);
+const COURT = new Set(['J', 'Q', 'K']);
+
+export function isJoker(card) {
+    return card.value === 'JOKER';
+}
 
 export function cardKey(card) {
     return `${card.value}-${card.suit}`;
 }
 
 export function cardLabel(card) {
-    return `${card.value}${SYMBOLS[card.suit]}`;
+    return isJoker(card) ? 'Joker' : `${card.value}${SYMBOLS[card.suit]}`;
 }
 
 export function sortCards(cards) {
@@ -22,8 +27,27 @@ export function sortCards(cards) {
 
 function base(tag, classes) {
     const el = document.createElement(tag);
-    el.className = ['card', ...classes].join(' ');
+    el.className = ['card', ...classes].filter(Boolean).join(' ');
     if (tag === 'button') el.type = 'button';
+    return el;
+}
+
+function span(className, text) {
+    const el = document.createElement('span');
+    el.className = className;
+    el.textContent = text;
+    return el;
+}
+
+/** The rank over the suit, as printed in the corner of a real card. */
+function corner(card, className) {
+    const el = document.createElement('span');
+    el.className = className;
+    if (isJoker(card)) {
+        el.append(span('rank', '★'));
+    } else {
+        el.append(span('rank', card.value), span('suit', SYMBOLS[card.suit]));
+    }
     return el;
 }
 
@@ -33,23 +57,25 @@ function base(tag, classes) {
  * neither playable nor selectable is rendered disabled so the reason is visible.
  */
 export function cardElement(card, { onSelect = null, playable = false, selected = false, enabled = null, index = null } = {}) {
+    const joker = isJoker(card);
     const red = card.suit === 'hearts' || card.suit === 'diamonds';
-    const el = base(onSelect ? 'button' : 'div', ['face-up', red ? 'red' : 'black', MAGIC.has(card.value) ? 'magic' : '']);
-    const label = cardLabel(card);
-    el.setAttribute('aria-label', `${card.value} of ${card.suit}`);
+    const kind = joker ? 'joker' : COURT.has(card.value) ? 'court' : card.value === 'A' ? 'ace' : 'num';
+    const el = base(onSelect ? 'button' : 'div', ['face-up', joker ? 'joker' : red ? 'red' : 'black', kind, MAGIC.has(card.value) ? 'magic' : '']);
+    el.setAttribute('aria-label', joker ? 'Joker' : `${card.value} of ${card.suit}`);
     el.dataset.key = cardKey(card);
     if (index !== null) el.style.setProperty('--i', String(index));
 
-    const top = document.createElement('span');
-    top.className = 'corner';
-    top.textContent = label;
     const pip = document.createElement('span');
     pip.className = 'pip';
-    pip.textContent = SYMBOLS[card.suit];
-    const bottom = document.createElement('span');
-    bottom.className = 'corner bottom';
-    bottom.textContent = label;
-    el.append(top, pip, bottom);
+    if (joker) {
+        pip.textContent = '🃏';
+    } else if (kind === 'court') {
+        // Court cards carry their letter large, with the suit tucked underneath.
+        pip.append(span('letter', card.value), span('small-suit', SYMBOLS[card.suit]));
+    } else {
+        pip.textContent = SYMBOLS[card.suit];
+    }
+    el.append(corner(card, 'corner'), pip, corner(card, 'corner bottom'));
 
     if (onSelect) {
         el.classList.toggle('playable', playable);

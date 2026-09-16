@@ -199,7 +199,9 @@ test('two players can create, join, start and play a full turn', async () => {
     const otherState = starter === alice ? bobState : aliceState;
     assert.equal(starterState.legalCards.length, 3, 'anything goes on an empty pile');
     assert.equal(starterState.canPickUp, false, 'nothing to pick up from an empty pile');
-    assert.deepEqual(aliceState.settings, { turnSeconds: 60, private: false });
+    assert.deepEqual(aliceState.settings, { turnSeconds: 60, private: false, botLevel: 'normal', mode: 'classic', rules: { threes: false, sevens: false, eights: false, nines: false, jokers: false, tensLow: false } });
+    assert.equal(aliceState.direction, 1);
+    assert.equal(typeof aliceState.players[0].avatar, 'string');
     const remaining = aliceState.turnEndsAt - aliceState.serverNow;
     assert.ok(remaining > 59_000 && remaining <= 60_000, `turn clock is running: ${remaining}`);
 
@@ -310,12 +312,22 @@ test('the host controls settings, private rooms stay off the list, and the turn 
     assert.match((await request(host, 'update-settings', { turnSeconds: 999 })).error, /Turn timer must be/);
     assert.match((await request(host, 'update-settings', { turnSeconds: 'soon' })).error, /Turn timer must be/);
     assert.match((await request(host, 'update-settings', { private: 'yes' })).error, /true or false/);
+    assert.match((await request(host, 'update-settings', { botLevel: 'genius' })).error, /Bot level/);
+    assert.match((await request(host, 'update-settings', { rules: { fives: true } })).error, /Unknown rule/);
+    const [ruled] = await Promise.all([
+        waitFor(guest, 'room-state', (s) => s.settings.rules.sevens === true),
+        request(host, 'update-settings', { rules: { sevens: true, jokers: true }, botLevel: 'easy' }),
+    ]);
+    assert.equal(ruled.settings.botLevel, 'easy');
+    assert.equal(ruled.settings.rules.jokers, true);
+    await request(host, 'update-settings', { rules: { sevens: false, jokers: false }, botLevel: 'normal' });
 
     const [view] = await Promise.all([
         waitFor(guest, 'room-state', (s) => s.settings.private === true),
         request(host, 'update-settings', { turnSeconds: 1, private: true }),
     ]);
-    assert.deepEqual(view.settings, { turnSeconds: 1, private: true });
+    assert.equal(view.settings.turnSeconds, 1);
+    assert.equal(view.settings.private, true);
     assert.equal((await request(guest, 'list-rooms')).rooms.some((r) => r.id === created.roomId), false, 'private rooms are not advertised');
     const walkIn = await client();
     assert.equal((await request(walkIn, 'join-room', { roomId: created.roomId, name: 'Ivy' })).ok, true, 'but the code still works');
@@ -323,7 +335,7 @@ test('the host controls settings, private rooms stay off the list, and the turn 
 
     // Nobody presses Ready and nobody moves: the swap phase ends by itself, then the server plays for whoever is up.
     const swapOver = waitFor(host, 'game-event', (e) => e.type === 'started' && e.auto === true, 4000);
-    const timedOut = waitFor(host, 'game-event', (e) => e.auto === true && e.type !== 'started', 6000);
+    const timedOut = waitFor(host, 'game-event', (e) => e.auto === 'timeout', 6000);
     const moved = waitFor(host, 'room-state', (s) => s.status === 'playing' && s.pile.count > 0, 6000);
     const [dealt] = await Promise.all([
         waitFor(host, 'room-state', (s) => s.status === 'swapping'),
@@ -384,7 +396,7 @@ test('room list only advertises joinable rooms and the room cap is enforced', as
     const listAfter = await request(host, 'list-rooms');
     assert.equal(listAfter.rooms.length, listBefore.rooms.length + 1);
     const entry = listAfter.rooms.find((r) => r.id === roomId);
-    assert.deepEqual(entry, { id: roomId, playerCount: 1, maxPlayers: 5, status: 'waiting', host: 'Host' });
+    assert.deepEqual(entry, { id: roomId, playerCount: 1, maxPlayers: 5, status: 'waiting', host: 'Host', houseRules: false, mode: 'classic' });
     assert.equal((await request(host, 'create-room', { name: 'Again' })).error, 'You are already in a room');
 
     const savedMax = store.maxRooms;
@@ -602,4 +614,126 @@ test('a late arrival watches the running game and is dealt into the next one', a
     ]);
     assert.equal(dealt.hand.length, 3, 'the spectator is in the next round');
     for (const socket of [host, late]) await request(socket, 'leave-room');
+});
+
+
+test('the table plays for a player who is disconnected, and for one who keeps timing out', async () => {
+    const host = await client();
+    const guest = await client();
+    const created = await request(host, 'create-room', { name: 'Hana', avatar: 'crown' });
+    const joined = await request(guest, 'join-room', { roomId: created.roomId, name: 'Gus', avatar: 'nonsense' });
+    await request(host, 'update-settings', { turnSeconds: 0 });
+    const [view] = await dealAndReady(host, [host, guest]);
+    assert.equal(view.players.find((p) => p.id === created.playerId).avatar, 'crown');
+    assert.notEqual(view.players.find((p) => p.id === joined.playerId).avatar, 'nonsense', 'unknown avatars fall back');
+
+    // Whoever is up disconnects; with no turn timer the table still plays for them.
+    const current = view.currentPlayerId === created.playerId ? host : guest;
+    const other = current === host ? guest : host;
+    const played = waitFor(other, 'game-event', (e) => e.auto === 'away', 4000);
+    const moved = waitFor(other, 'room-state', (s) => s.currentPlayerId === (other === host ? created.playerId : joined.playerId) || s.pile.count > 0, 4000);
+    current.disconnect();
+    assert.match((await played).message, /\(away\) (played|picked up|flipped)/);
+    await moved;
+
+    // Reconnecting with the token puts the player back in charge.
+    const again = await client();
+    const token = current === host ? created.token : joined.token;
+    const [restored] = await Promise.all([
+        waitFor(again, 'room-state', (s) => s.status === 'playing'),
+        request(again, 'resume-session', { roomId: created.roomId, token }),
+    ]);
+    assert.equal(restored.players.every((p) => p.connected), true);
+
+    for (const handle of store.pendingRemovals.values()) clearTimeout(handle);
+    await request(again, 'leave-room');
+    await request(other, 'leave-room');
+});
+
+test('two lost turns in a row mark a player away until they act again', async () => {
+    const host = await client();
+    const guest = await client();
+    const created = await request(host, 'create-room', { name: 'Hana' });
+    await request(guest, 'join-room', { roomId: created.roomId, name: 'Gus' });
+    await request(host, 'update-settings', { turnSeconds: 1 });
+    // The one-second clock, not the stand-in, must be what moves for the absent players here,
+    // so that a human still gets a moment to act on their own turn.
+    const savedDelay = store.botDelay;
+    store.botDelay = { ...savedDelay, awayMs: 3_000 };
+    const away = waitFor(guest, 'game-event', (e) => e.type === 'away', 15_000);
+    await dealAndReady(host, [host, guest]);
+    const event = await away;
+    assert.match(event.message, /seems to be away/);
+    const awayId = event.playerId;
+    const awaySocket = awayId === created.playerId ? host : guest;
+    const view = await waitFor(awaySocket, 'room-state', (s) => s.players.find((p) => p.id === awayId).away === true, 4000);
+    assert.equal(view.players.find((p) => p.id === awayId).away, true);
+
+    // Any action of their own brings them back.
+    const back = waitFor(awaySocket, 'game-event', (e) => e.type === 'back', 6000);
+    const sendMove = async () => {
+        const s = await waitFor(awaySocket, 'room-state', (v) => v.isMyTurn && v.status === 'playing', 6000);
+        if (s.legalCards.length) return request(awaySocket, 'play-cards', { cards: [s.legalCards[0]] });
+        if (s.canPickUp) return request(awaySocket, 'pick-up-pile');
+        return request(awaySocket, 'play-face-down', { index: 0 });
+    };
+    let res = await sendMove();
+    if (!res.ok) res = await sendMove();
+    assert.equal(res.ok, true, res.error);
+    assert.match((await back).message, /is back at the table/);
+    store.botDelay = savedDelay;
+    await request(host, 'leave-room');
+    await request(guest, 'leave-room');
+});
+
+test('modes preset the clock and house rules, and "play vs bots" seats bots on creation', async () => {
+    const host = await client();
+    const guest = await client();
+    const [view, created] = await Promise.all([
+        waitFor(host, 'room-state', (s) => s.players.length === 3),
+        request(host, 'create-room', { name: 'Solo', mode: 'party', bots: 2 }),
+    ]);
+    assert.equal(created.ok, true);
+    assert.equal(view.settings.mode, 'party');
+    assert.equal(view.settings.turnSeconds, 60);
+    assert.equal(view.settings.rules.jokers, true);
+    assert.deepEqual(view.players.filter((p) => p.isBot).map((p) => p.name), ['Ada', 'Bram']);
+    assert.deepEqual(view.pile.recent, []);
+    const listed = (await request(guest, 'list-rooms')).rooms.find((r) => r.id === created.roomId);
+    assert.equal(listed.mode, 'party');
+    assert.equal(listed.houseRules, true);
+
+    assert.match((await request(host, 'update-settings', { mode: 'nightmare' })).error, /Mode must be/);
+    const [blitz] = await Promise.all([
+        waitFor(host, 'room-state', (s) => s.settings.mode === 'blitz'),
+        request(host, 'update-settings', { mode: 'blitz' }),
+    ]);
+    assert.equal(blitz.settings.turnSeconds, 15);
+    assert.equal(Object.values(blitz.settings.rules).some(Boolean), false);
+    const [custom] = await Promise.all([
+        waitFor(host, 'room-state', (s) => s.settings.turnSeconds === 30),
+        request(host, 'update-settings', { turnSeconds: 30 }),
+    ]);
+    assert.equal(custom.settings.mode, 'custom');
+    const [back] = await Promise.all([
+        waitFor(host, 'room-state', (s) => s.settings.turnSeconds === 15),
+        request(host, 'update-settings', { turnSeconds: 15 }),
+    ]);
+    assert.equal(back.settings.mode, 'blitz', 'hand-tuned settings that match a mode take its name');
+    const [both] = await Promise.all([
+        waitFor(host, 'room-state', (s) => s.settings.rules.tensLow === true),
+        request(host, 'update-settings', { mode: 'party', rules: { tensLow: true } }),
+    ]);
+    assert.equal(both.settings.mode, 'custom', 'rules in the same patch apply on top of the mode');
+    assert.equal(both.settings.rules.jokers, true);
+
+    const [odd, unknown] = await Promise.all([
+        waitFor(guest, 'room-state', (s) => s.players.length === 5),
+        request(guest, 'create-room', { name: 'Odd', mode: 'nightmare', bots: 99 }),
+    ]);
+    assert.equal(unknown.ok, true);
+    assert.equal(odd.settings.mode, 'classic', 'an unknown mode falls back to classic');
+    assert.equal(odd.players.filter((p) => p.isBot).length, 4, 'bots are capped at the free seats');
+    await request(host, 'leave-room');
+    await request(guest, 'leave-room');
 });

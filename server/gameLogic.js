@@ -1,21 +1,23 @@
 /**
  * Pure rules of Shithead, following the basic game as described at
- * https://www.pagat.com/beating/shithead.html. Nothing here knows about
- * sockets or rooms.
+ * https://www.pagat.com/beating/shithead.html, plus the optional house rules
+ * that page and Wikipedia list. Nothing here knows about sockets or rooms.
  *
  * A game is a plain object so it can be serialised, inspected and tested:
  *   {
- *     status:   'swapping' | 'playing' | 'finished'
- *     deck:     Card[]      stock, last element is drawn next
- *     pile:     Card[]      discard pile, last element is the top
- *     order:    string[]    player ids in turn order (dealer's left first)
- *     turn:     number      index into `order`
- *     cards:    { [id]: { hand, faceUp, faceDown } }
- *     ready:    string[]    players who finished swapping
- *     finished: string[]    ids in the order they got rid of all their cards
- *     loser:    string|null the shithead, set when the game completes
- *     endReason:'completed' | 'abandoned' | null
- *     stats:    { burns, pickups: { [id]: cards }, biggestPickup: { id, count } | null }
+ *     status:    'swapping' | 'playing' | 'finished'
+ *     rules:     { threes, sevens, eights, nines, jokers, tensLow }  all booleans
+ *     deck:      Card[]      stock, last element is drawn next
+ *     pile:      Card[]      discard pile, last element is the top
+ *     order:     string[]    player ids in seating order (dealer's left first)
+ *     turn:      number      index into `order`
+ *     direction: 1 | -1      clockwise or reversed (nines, jokers)
+ *     cards:     { [id]: { hand, faceUp, faceDown } }
+ *     ready:     string[]    players who finished swapping
+ *     finished:  string[]    ids in the order they got rid of all their cards
+ *     loser:     string|null the shithead, set when the game completes
+ *     endReason: 'completed' | 'abandoned' | null
+ *     stats:     { burns, pickups: { [id]: cards }, biggestPickup: { id, count } | null }
  *   }
  *
  * Every mutating function validates the move and returns either
@@ -24,26 +26,53 @@
 
 const SUITS = ['hearts', 'diamonds', 'clubs', 'spades'];
 const VALUES = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A'];
+const JOKER = Object.freeze({ suit: 'joker', value: 'JOKER' });
 
-/** Beating order: 3 is lowest, ace highest. Twos are never compared, they are magic. */
-const RANK = { 3: 3, 4: 4, 5: 5, 6: 6, 7: 7, 8: 8, 9: 9, 10: 10, J: 11, Q: 12, K: 13, A: 14, 2: 15 };
+/** Beating order: 3 is lowest, ace highest. Twos and jokers are never compared. */
+const RANK = { 3: 3, 4: 4, 5: 5, 6: 6, 7: 7, 8: 8, 9: 9, 10: 10, J: 11, Q: 12, K: 13, A: 14, 2: 15, JOKER: 16 };
 /** "The first 3 dealt ... if need be the first 4, and so on": the order used to find the lowest card. */
-const NATURAL_ORDER = ['3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A', '2'];
-/** What to give up first when a choice is forced: low cards before magic cards. */
-const SPEND_ORDER = ['3', '4', '5', '6', '7', '8', '9', 'J', 'Q', 'K', 'A', '10', '2'];
+const NATURAL_ORDER = ['3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A', '2', 'JOKER'];
+/** What to give up first when a choice is forced: low cards before the special ones. */
+const SPEND_ORDER = ['3', '4', '5', '6', '7', '8', '9', 'J', 'Q', 'K', 'A', '10', '2', 'JOKER'];
 const MAGIC = new Set(['2', '10']);
 const HAND_SIZE = 3;
 const TABLE_CARDS = 3;
 const MIN_PLAYERS = 2;
 const MAX_PLAYERS = 5;
 
-function createDeck() {
+/**
+ * House rules, all off in the basic game:
+ *  - threes:  a 3 skips the next player (one skip per 3 played)
+ *  - sevens:  after a 7 the next card must be 7 or lower (2 and 10 still go)
+ *  - eights:  an 8 is transparent: playable on anything, and the card under it must be beaten
+ *  - nines:   a 9 reverses the direction of play
+ *  - jokers:  two jokers join the deck; playable on anything, transparent, and they reverse direction
+ *  - tensLow: a 10 may not be played on a jack, queen, king or ace
+ */
+const DEFAULT_RULES = Object.freeze({ threes: false, sevens: false, eights: false, nines: false, jokers: false, tensLow: false });
+const RULE_KEYS = Object.keys(DEFAULT_RULES);
+
+/** Merge a rules patch onto the defaults, rejecting unknown keys or non-boolean values. */
+function normaliseRules(patch, base = DEFAULT_RULES) {
+    if (patch === undefined || patch === null) return { ok: true, rules: { ...base } };
+    if (typeof patch !== 'object' || Array.isArray(patch)) return { error: 'Rules must be an object of true/false flags' };
+    const rules = { ...base };
+    for (const [key, value] of Object.entries(patch)) {
+        if (!RULE_KEYS.includes(key)) return { error: `Unknown rule: ${key}` };
+        if (typeof value !== 'boolean') return { error: `Rule ${key} must be true or false` };
+        rules[key] = value;
+    }
+    return { ok: true, rules };
+}
+
+function createDeck(rules = DEFAULT_RULES) {
     const deck = [];
     for (const suit of SUITS) {
         for (const value of VALUES) {
             deck.push({ suit, value });
         }
     }
+    if (rules.jokers) deck.push({ ...JOKER }, { ...JOKER });
     return deck;
 }
 
@@ -56,11 +85,14 @@ function shuffle(deck, random = Math.random) {
     return deck;
 }
 
+function isJoker(card) {
+    return Boolean(card) && card.suit === 'joker' && card.value === 'JOKER';
+}
+
 function isCard(value) {
     return Boolean(value)
         && typeof value === 'object'
-        && SUITS.includes(value.suit)
-        && VALUES.includes(value.value);
+        && ((SUITS.includes(value.suit) && VALUES.includes(value.value)) || isJoker(value));
 }
 
 function sameCard(a, b) {
@@ -79,22 +111,40 @@ function isSet(cards) {
         && cards.every((c) => c.value === cards[0].value);
 }
 
+/** Transparent cards are looked through: jokers always, eights under that house rule. */
+function isTransparent(card, rules = DEFAULT_RULES) {
+    return isJoker(card) || (Boolean(rules.eights) && card.value === '8');
+}
+
+/** The card that actually has to be beaten, or null when the pile is empty or all transparent. */
+function effectiveTop(pile, rules = DEFAULT_RULES) {
+    for (let i = pile.length - 1; i >= 0; i--) {
+        if (!isTransparent(pile[i], rules)) return pile[i];
+    }
+    return null;
+}
+
 /**
- * May `card` go on top of `top`?
+ * May `card` go on the pile?
  *  - An empty pile takes anything.
- *  - Twos and tens may be played on anything.
+ *  - Twos, jokers and (under the house rule) eights may be played on anything.
+ *  - Tens may be played on anything, unless `tensLow` keeps them off J, Q, K and A.
  *  - Anything may be played on a two.
- *  - Otherwise the card must be of equal or higher rank. Suits never matter.
+ *  - After a 7 with `sevens` on, the card must be 7 or lower.
+ *  - Otherwise the card must be of equal or higher rank than the effective top. Suits never matter.
  */
-function canPlayOn(card, top) {
-    if (!top) return true;
-    if (isMagic(card)) return true;
-    if (top.value === '2') return true;
+function canPlayOn(card, pile, rules = DEFAULT_RULES) {
+    if (isJoker(card) || card.value === '2') return true;
+    if (rules.eights && card.value === '8') return true;
+    const top = effectiveTop(pile, rules);
+    if (card.value === '10') return !rules.tensLow || !top || top.value === '2' || RANK[top.value] <= 10;
+    if (!top || top.value === '2') return true;
+    if (rules.sevens && top.value === '7') return RANK[card.value] <= 7;
     return RANK[card.value] >= RANK[top.value];
 }
 
-function isValidPlay(card, pile) {
-    return canPlayOn(card, pile[pile.length - 1]);
+function isValidPlay(card, pile, rules = DEFAULT_RULES) {
+    return canPlayOn(card, pile, rules);
 }
 
 /** The lowest card in `cards` by the given order, or null. */
@@ -129,11 +179,11 @@ function firstPlayerIndex(order, cards) {
 }
 
 /** Deal one card at a time around the table: three face-down, three face-up, three in hand. */
-function createGame(playerIds, random = Math.random) {
+function createGame(playerIds, random = Math.random, rules = DEFAULT_RULES) {
     if (playerIds.length < MIN_PLAYERS || playerIds.length > MAX_PLAYERS) {
         throw new RangeError(`Need between ${MIN_PLAYERS} and ${MAX_PLAYERS} players`);
     }
-    const deck = shuffle(createDeck(), random);
+    const deck = shuffle(createDeck(rules), random);
     const cards = Object.fromEntries(playerIds.map((id) => [id, { faceDown: [], faceUp: [], hand: [] }]));
     for (const pileName of ['faceDown', 'faceUp', 'hand']) {
         for (let round = 0; round < TABLE_CARDS; round++) {
@@ -143,10 +193,13 @@ function createGame(playerIds, random = Math.random) {
     const order = [...playerIds];
     return {
         status: 'swapping',
+        rules: { ...DEFAULT_RULES, ...rules },
         deck,
         pile: [],
         order,
+        dealt: order.length,
         turn: firstPlayerIndex(order, cards),
+        direction: 1,
         cards,
         ready: [],
         finished: [],
@@ -226,7 +279,7 @@ function getSource(game, id) {
 function legalCards(game, id) {
     const source = getSource(game, id);
     if (source !== 'hand' && source !== 'faceUp') return [];
-    return game.cards[id][source].filter((card) => isValidPlay(card, game.pile));
+    return game.cards[id][source].filter((card) => isValidPlay(card, game.pile, game.rules));
 }
 
 /** Picking up is always allowed while holding visible cards and the pile is not empty. */
@@ -254,12 +307,6 @@ function activePlayers(game) {
     return game.order.filter((id) => !game.finished.includes(id));
 }
 
-function skipFinished(game) {
-    while (game.finished.includes(game.order[game.turn])) {
-        game.turn = (game.turn + 1) % game.order.length;
-    }
-}
-
 function endIfOver(game, reason) {
     const active = activePlayers(game);
     if (active.length > 1) return false;
@@ -269,10 +316,30 @@ function endIfOver(game, reason) {
     return true;
 }
 
-function advanceTurn(game) {
-    if (endIfOver(game, 'completed')) return;
-    game.turn = (game.turn + 1) % game.order.length;
-    skipFinished(game);
+/**
+ * Hand the turn to the next active player in the current direction, passing
+ * over `skip` further players. Returns the ids that were skipped.
+ */
+function advanceTurn(game, skip = 0) {
+    if (endIfOver(game, 'completed')) return [];
+    const skipped = [];
+    let toSkip = skip;
+    for (;;) {
+        game.turn = (game.turn + game.direction + game.order.length) % game.order.length;
+        const id = game.order[game.turn];
+        if (game.finished.includes(id)) continue;
+        if (toSkip > 0) {
+            skipped.push(id);
+            toSkip -= 1;
+            continue;
+        }
+        return skipped;
+    }
+}
+
+/** If the current seat is finished (after a removal), move on to someone who is not. */
+function settleTurnPointer(game) {
+    if (game.finished.includes(game.order[game.turn])) advanceTurn(game);
 }
 
 /** "If after playing you have fewer than three cards in your hand, you must immediately replenish." */
@@ -285,12 +352,24 @@ function refillHand(game, id) {
 
 /**
  * The consequences of cards landing on the pile: a ten or a completed four of
- * a kind burns the pile and the same player goes again; otherwise the turn passes.
+ * a kind burns the pile and the same player goes again; nines and jokers may
+ * reverse direction; threes may skip; otherwise the turn passes.
  */
 function settleAfterPlay(game, id, played) {
+    const value = played[0].value;
     let burn = null;
-    if (played[0].value === '10') burn = 'ten';
+    if (value === '10') burn = 'ten';
     else if (topRun(game.pile) >= 4) burn = 'four';
+
+    const effects = { reversed: false, skipped: [] };
+    if ((game.rules.nines && value === '9') || isJoker(played[0])) {
+        if (played.length % 2 === 1) {
+            game.direction *= -1;
+            effects.reversed = true;
+        }
+    }
+    const skips = game.rules.threes && value === '3' ? played.length : 0;
+
     if (burn) {
         game.pile = [];
         game.stats.burns += 1;
@@ -302,13 +381,13 @@ function settleAfterPlay(game, id, played) {
     if (finished) game.finished.push(id);
 
     if (endIfOver(game, 'completed')) {
-        return { burn, finished, gameOver: true, playAgain: false };
+        return { burn, finished, gameOver: true, playAgain: false, effects };
     }
     if (burn && !finished) {
-        return { burn, finished, gameOver: false, playAgain: true };
+        return { burn, finished, gameOver: false, playAgain: true, effects };
     }
-    advanceTurn(game);
-    return { burn, finished, gameOver: false, playAgain: false };
+    effects.skipped = advanceTurn(game, skips);
+    return { burn, finished, gameOver: false, playAgain: false, effects };
 }
 
 function checkTurn(game, id) {
@@ -334,7 +413,7 @@ function playCards(game, id, cards) {
         if (i === -1) return { error: 'You do not hold those cards' };
         indexes.push(i);
     }
-    if (!isValidPlay(cards[0], game.pile)) return { error: 'Those cards cannot be played on the pile' };
+    if (!isValidPlay(cards[0], game.pile, game.rules)) return { error: 'Those cards cannot be played on the pile' };
 
     const played = indexes.sort((a, b) => b - a).map((i) => from.splice(i, 1)[0]).reverse();
     game.pile.push(...played);
@@ -353,7 +432,7 @@ function playFaceDown(game, id, index) {
     }
     const [card] = faceDown.splice(index, 1);
 
-    if (isValidPlay(card, game.pile)) {
+    if (isValidPlay(card, game.pile, game.rules)) {
         game.pile.push(card);
         return { ok: true, card, source: 'faceDown', success: true, ...settleAfterPlay(game, id, [card]) };
     }
@@ -415,18 +494,20 @@ function removePlayer(game, id) {
     if (index < game.turn) {
         game.turn -= 1;
     } else if (wasCurrent) {
-        game.turn %= game.order.length;
+        // The seat after the departed player, in the current direction, is up.
+        game.turn = game.direction === 1 ? game.turn % game.order.length : (game.turn - 1 + game.order.length) % game.order.length;
     }
     if (game.status === 'swapping' && allReady(game)) {
         beginPlay(game);
     } else if (game.status === 'playing' && !endIfOver(game, 'abandoned')) {
-        skipFinished(game);
+        settleTurnPointer(game);
     }
 }
 
 export {
     SUITS,
     VALUES,
+    JOKER,
     RANK,
     NATURAL_ORDER,
     SPEND_ORDER,
@@ -434,12 +515,18 @@ export {
     TABLE_CARDS,
     MIN_PLAYERS,
     MAX_PLAYERS,
+    DEFAULT_RULES,
+    RULE_KEYS,
+    normaliseRules,
     createDeck,
     shuffle,
+    isJoker,
     isCard,
     sameCard,
     isMagic,
     isSet,
+    isTransparent,
+    effectiveTop,
     canPlayOn,
     isValidPlay,
     lowestValue,

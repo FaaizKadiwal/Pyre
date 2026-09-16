@@ -5,12 +5,18 @@
 import { socket, request } from './socket.js';
 import * as ui from './ui.js';
 import * as sound from './sound.js';
-import { cardKey, sortCards } from './cards.js';
+import { cardKey, cardLabel, sortCards } from './cards.js';
+import { AVATARS } from './avatars.js';
+import { loadRecord, recordRound } from './stats.js';
 
 const NAME_KEY = 'cardgame:name';
+const AVATAR_KEY = 'cardgame:avatar';
+const MODE_KEY = 'cardgame:mode';
 const SESSION_KEY = 'cardgame:session';
 const THEME_KEY = 'cardgame:theme';
 const THEMES = ['ember', 'midnight', 'felt'];
+const MODES = ['classic', 'party', 'blitz', 'inferno'];
+const SOLO_BOTS = 3;
 const FLASH_MS = 3000;
 const ROOM_CODE_LENGTH = 5;
 const COUNTDOWN_TICK_MS = 250;
@@ -21,6 +27,9 @@ let flashTimer = null;
 let clockOffset = 0;   // serverNow - Date.now(), so the countdown ignores clock skew
 let countdownTimer = null;
 let warned = false;
+let avatarId = AVATARS[0];
+let modeId = MODES[0];
+let lastJoinSound = 0;
 
 /** What the player is in the middle of choosing; cleared whenever fresh state arrives. */
 const choice = { selected: [], swapPick: null, sacrifice: null };
@@ -32,17 +41,19 @@ function resetChoice() {
 }
 
 // ---------- Local persistence ----------
-// Name, theme and sound are remembered across visits. The session (room +
-// secret token) is kept per tab so a reload or a dropped connection gets the
-// same seat back, while two tabs in one browser can still be two players.
+// Name, avatar, mode, theme, sound and the personal record are remembered
+// across visits. The session (room + secret token) is kept per tab so a reload
+// or a dropped connection gets the same seat back, while two tabs in one
+// browser can still be two players.
 
-function loadName() {
-    try { return localStorage.getItem(NAME_KEY) ?? ''; } catch { return ''; }
-}
+const storage = {
+    get(key) { try { return localStorage.getItem(key); } catch { return null; } },
+    set(key, value) { try { localStorage.setItem(key, value); } catch { /* storage unavailable */ } },
+};
 
 function myName() {
     const name = ui.els.nameInput.value.trim();
-    try { localStorage.setItem(NAME_KEY, name); } catch { /* storage unavailable */ }
+    storage.set(NAME_KEY, name);
     return name;
 }
 
@@ -58,16 +69,21 @@ function clearSession() {
     try { sessionStorage.removeItem(SESSION_KEY); } catch { /* storage unavailable */ }
 }
 
-function loadTheme() {
-    try {
-        const saved = localStorage.getItem(THEME_KEY);
-        return THEMES.includes(saved) ? saved : THEMES[0];
-    } catch { return THEMES[0]; }
+function setTheme(name) {
+    ui.applyTheme(name, { animate: true });
+    storage.set(THEME_KEY, name);
 }
 
-function setTheme(name) {
-    ui.applyTheme(name);
-    try { localStorage.setItem(THEME_KEY, name); } catch { /* storage unavailable */ }
+function pickAvatar(id) {
+    avatarId = AVATARS.includes(id) ? id : AVATARS[0];
+    storage.set(AVATAR_KEY, avatarId);
+    ui.renderAvatarPicker(AVATARS, avatarId, pickAvatar);
+}
+
+function pickMode(id) {
+    modeId = MODES.includes(id) ? id : MODES[0];
+    storage.set(MODE_KEY, modeId);
+    ui.renderModePicker(modeId, pickMode);
 }
 
 // ---------- Presentation helpers ----------
@@ -86,6 +102,19 @@ function inviteLink(roomId) {
     url.hash = '';
     url.searchParams.set('room', roomId);
     return url.toString();
+}
+
+/** What beats the pile right now, in words, taking the house rules into account. */
+function pileHint(s) {
+    const rules = s.settings.rules;
+    const wild = ['2', '10', rules.jokers && 'joker', rules.eights && '8'].filter(Boolean);
+    const wildText = `or a ${wild.join('/')}`;
+    const top = s.pile.effectiveTop;
+    if (s.pile.count === 0) return 'start a new pile with any card or set of equal cards';
+    if (!top) return 'the pile is see-through, so anything goes';
+    if (top.value === '2') return 'anything goes on a 2';
+    if (rules.sevens && top.value === '7') return `play 7 or lower, ${wildText}`;
+    return `play a card equal to or higher than ${top.value}, ${wildText}`;
 }
 
 function statusFor(s) {
@@ -117,9 +146,8 @@ function statusFor(s) {
     if (self?.finished) return 'You are out. Waiting for the others to finish.';
     if (!s.isMyTurn) return `${nameOf(s.currentPlayerId)}'s turn.`;
     if (s.mustPickUp) return 'Nothing beats the pile. Pick it up.';
-    if (s.pile.count === 0) return 'Your turn: start a new pile with any card or set of equal cards.';
-    if (s.source === 'hand') return `Your turn: play a card equal to or higher than ${s.pile.top.value}, or a 2 or 10.`;
-    if (s.source === 'faceUp') return 'Your turn: play from your face-up cards, or pick up the pile with one of them.';
+    if (s.source === 'hand') return `Your turn: ${pileHint(s)}.`;
+    if (s.source === 'faceUp') return `Your turn: ${pileHint(s)}, from your face-up cards, or pick up the pile with one of them.`;
     return 'Your turn: flip one of your face-down cards and hope it beats the pile.';
 }
 
@@ -202,6 +230,7 @@ const actions = {
             if (state.source === 'faceUp' && state.canPickUp) {
                 choice.sacrifice = choice.sacrifice && cardKey(choice.sacrifice) === cardKey(card) ? null : card;
                 choice.selected = [];
+                if (choice.sacrifice) sound.play('select');
                 rerender();
             }
             return;
@@ -221,6 +250,7 @@ const actions = {
         if (choice.selected.length === 1 && equals === 1) {
             actions.playSelected(); // nothing else to add, so one tap plays it
         } else {
+            if (!already) sound.play('select');
             rerender();
         }
     },
@@ -233,16 +263,17 @@ const actions = {
     },
 
     /** Tap a card during the swap phase: first pick one side, then the other, and the two are exchanged. */
-    swapPick(card, from) {
+    async swapPick(card, from) {
         if (!choice.swapPick || choice.swapPick.from === from) {
             choice.swapPick = { from, card };
+            sound.play('select');
             rerender();
             return;
         }
         const handCard = from === 'hand' ? card : choice.swapPick.card;
         const faceUpCard = from === 'faceUp' ? card : choice.swapPick.card;
         choice.swapPick = null;
-        act('swap-cards', { handCard, faceUpCard });
+        if (await act('swap-cards', { handCard, faceUpCard })) sound.play('swap');
     },
 
     kick: (player) => {
@@ -250,6 +281,10 @@ const actions = {
     },
 
     react: (emoji) => act('react', { emoji }),
+
+    setRules: (rules) => act('update-settings', { rules }),
+
+    setMode: (mode) => act('update-settings', { mode }),
 };
 
 // ---------- Screen transitions ----------
@@ -275,15 +310,19 @@ function exitRoom(message = '') {
     ui.setLobbyMessage(message, Boolean(message));
 }
 
-/** Handle the acknowledgement of create/join/resume: remember the seat and show the table. */
+/**
+ * Handle the acknowledgement of create/join: remember the seat and show the
+ * table. The first room-state usually lands a moment before this reply and
+ * has already opened the room, in which case the table must not be wiped.
+ */
 function seated(res) {
     saveSession({ roomId: res.roomId, token: res.token });
-    enterRoom();
+    if (!inRoom) enterRoom();
 }
 
 async function joinRoom(roomId) {
     ui.setLobbyMessage('Joining…');
-    const res = await request('join-room', { roomId, name: myName() });
+    const res = await request('join-room', { roomId, name: myName(), avatar: avatarId });
     if (res.ok) {
         seated(res);
     } else {
@@ -291,11 +330,27 @@ async function joinRoom(roomId) {
     }
 }
 
+/** Create a room in the chosen mode; with `bots` the table is filled and dealt straight away. */
+async function createRoom(bots = 0) {
+    ui.setLobbyMessage(bots ? 'Setting up your table…' : 'Creating room…');
+    const res = await request('create-room', { name: myName(), avatar: avatarId, mode: modeId, bots });
+    if (!res.ok) {
+        ui.setLobbyMessage(res.error, true);
+        return;
+    }
+    seated(res);
+    if (bots) act('start-game');
+}
+
 // ---------- Lobby ----------
 
-ui.els.nameInput.value = loadName();
+ui.els.nameInput.value = storage.get(NAME_KEY) ?? '';
 ui.renderSoundToggle(sound.isEnabled());
-ui.applyTheme(loadTheme());
+ui.applyTheme(THEMES.includes(storage.get(THEME_KEY)) ? storage.get(THEME_KEY) : THEMES[0]);
+pickAvatar(storage.get(AVATAR_KEY) ?? AVATARS[Math.floor(Math.random() * AVATARS.length)]);
+pickMode(storage.get(MODE_KEY) ?? MODES[0]);
+ui.renderRecord(loadRecord());
+ui.showScreen('lobby');
 document.addEventListener('pointerdown', () => sound.unlock(), { once: true });
 
 const invited = new URLSearchParams(location.search).get('room');
@@ -304,15 +359,8 @@ if (invited) {
     ui.setLobbyMessage(`You were invited to room ${ui.els.roomIdInput.value}. Enter your name and press Join.`);
 }
 
-ui.els.createButton.addEventListener('click', async () => {
-    ui.setLobbyMessage('Creating room…');
-    const res = await request('create-room', { name: myName() });
-    if (res.ok) {
-        seated(res);
-    } else {
-        ui.setLobbyMessage(res.error, true);
-    }
-});
+ui.els.createButton.addEventListener('click', () => createRoom());
+ui.els.playBotsButton.addEventListener('click', () => createRoom(SOLO_BOTS));
 
 ui.els.joinForm.addEventListener('submit', (e) => {
     e.preventDefault();
@@ -353,10 +401,14 @@ async function leave() {
     exitRoom();
 }
 
+async function ready() {
+    if (await act('ready')) sound.play('ready');
+}
+
 ui.els.leaveButton.addEventListener('click', leave);
 ui.els.startButton.addEventListener('click', () => act('start-game'));
 ui.els.addBotButton.addEventListener('click', () => act('add-bot'));
-ui.els.readyButton.addEventListener('click', () => act('ready'));
+ui.els.readyButton.addEventListener('click', ready);
 ui.els.beginButton.addEventListener('click', () => act('begin-play'));
 ui.els.playButton.addEventListener('click', () => actions.playSelected());
 ui.els.pickUpButton.addEventListener('click', () => act('pick-up-pile', { card: choice.sacrifice }));
@@ -366,6 +418,9 @@ ui.els.overlayLeave.addEventListener('click', leave);
 
 ui.els.turnSecondsSelect.addEventListener('change', () => {
     act('update-settings', { turnSeconds: Number(ui.els.turnSecondsSelect.value) });
+});
+ui.els.botLevelSelect.addEventListener('change', () => {
+    act('update-settings', { botLevel: ui.els.botLevelSelect.value });
 });
 ui.els.privateCheckbox.addEventListener('change', () => {
     act('update-settings', { private: ui.els.privateCheckbox.checked });
@@ -390,7 +445,7 @@ document.addEventListener('keydown', (e) => {
         return;
     }
     if (state.status === 'swapping') {
-        if (e.key === 'Enter' && !ui.els.readyButton.hidden) act('ready');
+        if (e.key === 'Enter' && !ui.els.readyButton.hidden) ready();
         return;
     }
     if (state.status !== 'playing' || !state.isMyTurn) return;
@@ -420,7 +475,9 @@ socket.on('room-state', (next) => {
     choice.selected = [];
     choice.sacrifice = null;
     if (state.status !== 'swapping') choice.swapPick = null;
-    ui.renderRoom(state, actions, choice);
+    // Whoever was on turn in the previous state is the one whose play changed the pile.
+    const mover = previous?.status === 'playing' ? previous.currentPlayerId : null;
+    ui.renderRoom(state, actions, choice, { mover });
     refreshStatus();
     updateTitle();
     startCountdown();
@@ -433,30 +490,79 @@ socket.on('room-state', (next) => {
             sound.play('deal');
         }
     }
+    if (previous && previous.direction !== state.direction) ui.spinDirection();
     const becameMyTurn = state.status === 'playing' && state.isMyTurn && !(previous?.status === 'playing' && previous.isMyTurn);
     if (becameMyTurn) sound.play('yourTurn');
     if (state.status === 'finished' && wasRunning) {
         const iLost = state.loser === state.me;
         sound.play(iLost ? 'lose' : 'win');
+        if (state.endReason === 'completed' && me()?.inGame) {
+            ui.renderRecord(recordRound({ firstOut: state.finished[0] === state.me, shithead: iLost }));
+        }
         ui.showSummary(state, { isHost: Boolean(me()?.isHost), iLost });
     }
 });
 
 socket.on('game-event', (event) => {
     ui.addLog(event.message);
-    if (event.type === 'burn') {
-        ui.burnEffect();
-        sound.play('burn');
-    } else if (event.type === 'play' && event.playerId !== state?.me) {
-        sound.play('play');
-    } else if (event.type === 'pick-up') {
-        sound.play('pickUp');
+    const mine = event.playerId === state?.me;
+    const who = event.playerId ? nameOf(event.playerId) : '';
+    if (event.flipped && event.card) ui.revealEffect(event.card);
+    switch (event.type) {
+        case 'burn':
+            ui.burnEffect();
+            sound.play('burn');
+            ui.toast(`🔥 ${who} burned the pile`, 'hot');
+            break;
+        case 'play':
+            if (event.flipped) sound.play('flip');
+            else if (!mine) sound.play('play');
+            if (event.effects?.reversed) { sound.play('reverse'); ui.toast('↺ Direction reversed'); }
+            if (event.effects?.skipped?.length) { sound.play('skip'); ui.toast(`⏭ ${event.effects.skipped.map(nameOf).join(' and ')} skipped`); }
+            break;
+        case 'pick-up':
+            sound.play('pickUp');
+            if (event.playerId) ui.pickUpEffect(event.playerId, event.count ?? 1, mine);
+            if (event.flipped && event.card) ui.toast(`😱 ${who} flipped ${cardLabel(event.card)} and picked up`, 'cold');
+            else if (event.count >= 6) ui.toast(`😩 ${who} picked up ${event.count} cards`, 'cold');
+            break;
+        case 'ready':
+            if (!mine) sound.play('ready');
+            break;
+        case 'joined':
+            // Three bots seated at once should sound like one arrival, not a chord.
+            if (!mine && event.at - lastJoinSound > 400) {
+                lastJoinSound = event.at;
+                sound.play('join');
+            }
+            break;
+        case 'away':
+            ui.toast(`💤 ${who} seems away, the table plays for them`);
+            break;
+        case 'back':
+            ui.toast(`👋 ${who} is back`);
+            break;
+        case 'disconnected':
+            ui.toast(`📡 ${who} lost connection`);
+            break;
+        case 'finished':
+            ui.toast(`🎉 ${who} is out!`, 'hot');
+            break;
+        default:
+            break;
     }
 });
 
-socket.on('reaction', ({ playerId, emoji }) => ui.showReaction(playerId, emoji));
+socket.on('reaction', ({ playerId, emoji }) => {
+    ui.showReaction(playerId, emoji);
+    if (playerId !== state?.me) sound.play('reaction');
+});
 
-socket.on('chat-message', (msg) => ui.addChat({ ...msg, mine: msg.playerId === state?.me }));
+socket.on('chat-message', (msg) => {
+    const mine = msg.playerId === state?.me;
+    ui.addChat({ ...msg, mine });
+    if (!mine) sound.play('chat');
+});
 
 socket.on('left-room', ({ reason }) => exitRoom(reason));
 

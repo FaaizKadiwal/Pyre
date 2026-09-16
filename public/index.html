@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <meta name="color-scheme" content="dark">
     <meta name="theme-color" content="#120f0d">
-    <meta name="description" content="Pyre: the Shithead card game for 2 to 5 players, live in the browser. Rooms, bots, invite links, no sign-up.">
+    <meta name="description" content="Pyre: the Shithead card game for 2 to 5 players, live in the browser. Four modes, rooms, bots, house rules, invite links, no sign-up.">
     <title>Pyre</title>
     <link rel="icon" href="icon.svg" type="image/svg+xml">
     <link rel="apple-touch-icon" href="icon.svg">
@@ -14,31 +14,55 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,800&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="css/style.css">
+    <link rel="stylesheet" href="css/effects.css">
 </head>
 <body>
     <noscript><p class="noscript">Pyre needs JavaScript to connect to the table. Please enable it and reload.</p></noscript>
+    <div class="ambient" aria-hidden="true">
+        <span>♠</span><span>♥</span><span>♦</span><span>♣</span><span>♠</span><span>♥</span>
+        <span>♦</span><span>♣</span><span>♠</span><span>♥</span><span>♦</span><span>♣</span>
+    </div>
     <main id="app">
         <section id="lobby" class="screen">
             <header class="hero">
                 <p class="eyebrow">The Shithead card game</p>
-                <h1 class="wordmark">Pyre</h1>
+                <div class="brand">
+                    <span id="hero-mark" class="mark-slot" aria-hidden="true"></span>
+                    <h1 class="wordmark">Pyre</h1>
+                </div>
                 <p class="tagline">Beat the pile. Burn it with a ten. Don't be the last one holding cards.</p>
+                <ul class="hero-points" aria-label="Highlights">
+                    <li>No sign-up</li>
+                    <li>2 to 5 players</li>
+                    <li>Bots that hold your seat</li>
+                    <li>Plays on any phone</li>
+                </ul>
             </header>
+
+            <section class="modes" aria-labelledby="modes-title">
+                <h2 id="modes-title" class="eyebrow">Choose your table</h2>
+                <div id="mode-picker" class="mode-picker" role="radiogroup" aria-label="Game mode"></div>
+            </section>
 
             <div class="lobby-grid">
                 <section class="panel enter" aria-labelledby="enter-title">
                     <h2 id="enter-title">Play</h2>
                     <label class="field" for="name-input">Your name</label>
                     <input id="name-input" type="text" maxlength="20" autocomplete="nickname" placeholder="e.g. Faaiz">
+                    <p class="field">Your avatar</p>
+                    <div id="avatar-picker" class="avatar-picker" role="radiogroup" aria-label="Avatar"></div>
                     <div class="lobby-actions">
                         <button id="create-room" class="primary" type="button">Create a room</button>
+                        <button id="play-bots" type="button">Play vs bots</button>
                         <form id="join-form" autocomplete="off">
                             <input id="room-id-input" type="text" maxlength="5" placeholder="Room code" aria-label="Room code" spellcheck="false" autocapitalize="characters">
                             <button type="submit">Join</button>
                         </form>
                     </div>
                     <p id="lobby-message" class="message" role="status" aria-live="polite"></p>
-                    <p class="hint">Alone? Create a room and add bots. Friends? Send them the invite link.</p>
+                    <p class="hint">Alone? <strong>Play vs bots</strong> seats three of them and deals. Friends? Create a room and send them the invite link.</p>
+
+                    <div id="record" class="record" aria-label="Your record"></div>
 
                     <details class="rules">
                         <summary>How to play</summary>
@@ -51,7 +75,8 @@
                             <li>Cannot or do not want to play? Pick up the whole pile. The next player starts a new one.</li>
                             <li>Once your hand and the deck are empty, play your face-up cards. If you have to pick up, one face-up card goes with the pile. Then flip your face-down cards blind; a bad flip means you pick up the pile.</li>
                             <li>Whoever gets rid of everything first is safe. The last player left holding cards is the shithead.</li>
-                            <li>If the turn timer runs out, the game plays for you.</li>
+                            <li><strong>Modes:</strong> Classic is the plain game with a minute a turn. Party adds the house rules: threes skip, sevens force a 7 or lower, eights are see-through, nines reverse, and two jokers that go on anything and reverse. Blitz is Classic on a 15-second clock. Inferno is everything on with 20 seconds. The host can fine-tune any of it in the room.</li>
+                            <li>If the turn timer runs out, the game plays for you. Lose two turns in a row and the table plays for you until you act again; the same happens while you are disconnected.</li>
                             <li>Keyboard: <kbd>1</kbd>–<kbd>9</kbd> select a card, <kbd>Enter</kbd> plays the selection or presses Ready, <kbd>P</kbd> picks up, <kbd>Esc</kbd> clears.</li>
                         </ul>
                     </details>
@@ -82,22 +107,30 @@
         </section>
 
         <section id="room" class="screen" hidden>
-            <header id="room-header">
+            <header id="room-header" class="panel">
                 <div class="room-id">
+                    <span id="header-mark" class="mark-slot small" aria-hidden="true"></span>
                     <span class="wordmark small">Pyre</span>
                     <span class="label">Room</span>
                     <strong id="room-code" class="code"></strong>
+                    <span id="room-mode" class="badge mode"></span>
                     <span id="player-count" class="label"></span>
                 </div>
                 <div class="actions">
-                    <button id="theme-toggle" type="button" title="Switch theme" aria-label="Switch theme">◐</button>
-                    <button id="sound-toggle" type="button" aria-pressed="true" title="Sound">🔔</button>
+                    <button id="theme-toggle" class="icon" type="button" title="Switch theme" aria-label="Switch theme">◐</button>
+                    <button id="sound-toggle" class="icon" type="button" aria-pressed="true" title="Sound">🔔</button>
                     <button id="copy-invite" type="button">Invite link</button>
                     <button id="leave-room" type="button">Leave</button>
                 </div>
             </header>
 
             <div id="table" aria-label="Game table">
+                <div id="table-meta">
+                    <div id="rule-chips" class="chips" aria-label="House rules in play"></div>
+                    <div id="order-rail" class="order-rail" hidden aria-label="Turn order"></div>
+                    <div id="direction" class="direction" hidden></div>
+                </div>
+                <div id="ticker" class="ticker" aria-live="polite"></div>
                 <div id="opponents" class="players"></div>
                 <div id="center">
                     <div class="stack">
@@ -111,16 +144,34 @@
                     </div>
                 </div>
                 <div id="settings" class="settings" hidden>
-                    <label for="turn-seconds">Turn timer
-                        <select id="turn-seconds">
-                            <option value="0">Off</option>
-                            <option value="30">30 s</option>
-                            <option value="60">60 s</option>
-                            <option value="90">90 s</option>
-                            <option value="120">2 min</option>
-                        </select>
-                    </label>
-                    <label><input id="private-room" type="checkbox"> Private room (join by code or link only)</label>
+                    <div class="settings-row">
+                        <span class="label">Mode</span>
+                        <div id="mode-buttons" class="presets" role="group" aria-label="Mode"></div>
+                    </div>
+                    <div class="settings-row">
+                        <label for="turn-seconds">Turn timer
+                            <select id="turn-seconds">
+                                <option value="0">Off</option>
+                                <option value="15">15 s</option>
+                                <option value="20">20 s</option>
+                                <option value="30">30 s</option>
+                                <option value="60">60 s</option>
+                                <option value="90">90 s</option>
+                                <option value="120">2 min</option>
+                            </select>
+                        </label>
+                        <label for="bot-level">Bots
+                            <select id="bot-level">
+                                <option value="easy">Easy</option>
+                                <option value="normal">Normal</option>
+                            </select>
+                        </label>
+                        <label><input id="private-room" type="checkbox"> Private room</label>
+                    </div>
+                    <div class="settings-row">
+                        <span class="label">House rules</span>
+                        <div id="rule-toggles" class="rule-toggles"></div>
+                    </div>
                     <span id="settings-summary" class="label"></span>
                 </div>
                 <div id="turn-bar">
@@ -141,12 +192,13 @@
                 <div id="me"></div>
             </div>
 
-            <section id="log-panel" aria-label="Game log">
-                <h2>Activity</h2>
+            <section id="log-panel" class="panel" aria-label="Game log">
+                <h2 class="eyebrow">Activity</h2>
                 <ol id="log" class="log"></ol>
             </section>
 
-            <aside id="chat" aria-label="Chat">
+            <aside id="chat" class="panel" aria-label="Chat">
+                <h2 class="eyebrow">Table talk</h2>
                 <div id="messages" class="messages"></div>
                 <div id="reactions" class="reactions" aria-label="React"></div>
                 <form id="chat-form" autocomplete="off">
@@ -155,22 +207,28 @@
                 </form>
             </aside>
 
-            <div id="overlay" class="overlay" hidden role="dialog" aria-modal="true" aria-labelledby="overlay-title">
-                <div class="overlay-card">
-                    <button id="overlay-close" class="close" type="button" aria-label="Close">×</button>
-                    <p class="eyebrow">Round over</p>
-                    <h2 id="overlay-title"></h2>
-                    <ol id="overlay-order" class="order"></ol>
-                    <dl id="overlay-stats" class="stats"></dl>
-                    <div class="buttons">
-                        <button id="overlay-again" class="primary" type="button" hidden>Play again</button>
-                        <button id="overlay-leave" type="button">Back to lobby</button>
-                    </div>
-                </div>
-                <div id="confetti" class="confetti" aria-hidden="true"></div>
-            </div>
         </section>
     </main>
+
+    <!-- Outside the screens on purpose: a fixed dialog must not inherit an animated ancestor's containing block. -->
+    <div id="overlay" class="overlay" hidden role="dialog" aria-modal="true" aria-labelledby="overlay-title">
+        <div class="overlay-card">
+            <button id="overlay-close" class="close" type="button" aria-label="Close">×</button>
+            <p class="eyebrow">Round over</p>
+            <h2 id="overlay-title"></h2>
+            <ol id="overlay-order" class="order"></ol>
+            <dl id="overlay-stats" class="stats"></dl>
+            <div id="overlay-history-wrap" hidden>
+                <p class="eyebrow">This session</p>
+                <ol id="overlay-history" class="history"></ol>
+            </div>
+            <div class="buttons">
+                <button id="overlay-again" class="primary" type="button" hidden>Play again</button>
+                <button id="overlay-leave" type="button">Back to lobby</button>
+            </div>
+        </div>
+        <div id="confetti" class="confetti" aria-hidden="true"></div>
+    </div>
 
     <script src="/socket.io/socket.io.js"></script>
     <script type="module" src="js/game.js"></script>

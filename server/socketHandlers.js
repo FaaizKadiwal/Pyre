@@ -64,15 +64,15 @@ export default function registerHandlers(io, socket, store, service) {
 
     on('list-rooms', () => ok({ rooms: rooms.listRooms(store) }));
 
-    on('create-room', ({ name }) => {
+    on('create-room', ({ name, avatar, mode, bots }) => {
         if (seat()) return fail('You are already in a room');
-        const result = service.createRoom(socket, rooms.cleanName(name));
+        const result = service.createRoom(socket, rooms.cleanName(name), avatar, mode, bots);
         return result.error ? fail(result.error) : session(result);
     });
 
-    on('join-room', ({ roomId, name }) => {
+    on('join-room', ({ roomId, name, avatar }) => {
         if (seat()) return fail('You are already in a room');
-        const result = service.joinRoom(socket, rooms.normaliseRoomId(roomId), rooms.cleanName(name));
+        const result = service.joinRoom(socket, rooms.normaliseRoomId(roomId), rooms.cleanName(name), avatar);
         return result.error ? fail(result.error) : session(result);
     });
 
@@ -89,8 +89,8 @@ export default function registerHandlers(io, socket, store, service) {
 
     on('start-game', () => seated((room, player) => service.startGame(room, player)));
 
-    on('update-settings', ({ turnSeconds, private: isPrivate }) =>
-        seated((room, player) => service.updateSettings(room, player, { turnSeconds, private: isPrivate })));
+    on('update-settings', ({ turnSeconds, private: isPrivate, botLevel, rules, mode }) =>
+        seated((room, player) => service.updateSettings(room, player, { turnSeconds, private: isPrivate, botLevel, rules, mode })));
 
     on('kick-player', ({ playerId }) => seated((room, player) => service.kick(room, player, playerId)));
 
